@@ -1,0 +1,2 @@
+# IDIOMA OBRIGATÓRIO
+CRÍTICO: O usuário é brasileiro. Você DEVE se comunicar, fazer perguntas, fazer o /brainstorm e explicar qualquer coisa EXCLUSIVAMENTE em Português do Brasil (pt-BR). As variáveis do código podem continuar em inglês, mas a nossa conversa será 100% em português.
