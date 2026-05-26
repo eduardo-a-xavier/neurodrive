@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>NeuroDrive</title>
+
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#FFD600">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="NeuroDrive">
+  <link rel="apple-touch-icon" href="/assets/icons/icon.svg">
+
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- ══════════════════ NAV ══════════════════ -->
+  <nav id="nav">
+    <a class="logo" href="#dashboard">⬡ NEURODRIVE</a>
+    <div class="nav-links">
+      <a href="#dashboard">Dashboard</a>
+      <a href="#equipe">Equipe</a>
+      <a href="#galeria">Galeria</a>
+    </div>
+    <span id="status-badge" class="badge-offline">● OFFLINE</span>
+  </nav>
+
+  <!-- ══════════════════ DASHBOARD ══════════════════ -->
+  <section id="dashboard" class="section">
+    <div class="section-header">
+      <h2>DASHBOARD</h2>
+      <span class="section-sub">Telemetria em tempo real · Escala 1:30</span>
+    </div>
+
+    <div class="dash-main">
+      <!-- Feed de vídeo -->
+      <div class="video-wrap">
+        <div class="video-label">FEED AO VIVO</div>
+        <img id="stream" src="/video" alt="Aguardando câmera...">
+        <div id="video-overlay" class="video-overlay">
+          <span>Sem sinal de câmera</span>
+        </div>
+      </div>
+
+      <!-- Painel de telemetria -->
+      <div class="tel-panel">
+        <div class="tel-title">TELEMETRIA</div>
+
+        <div class="tel-block">
+          <div class="tel-row">
+            <span class="tel-label">VELOCIDADE</span>
+            <span class="tel-value accent" id="vel-inst">-- km/h</span>
+          </div>
+          <div class="tel-row">
+            <span class="tel-label">MÁXIMA</span>
+            <span class="tel-value magenta" id="vel-max">-- km/h</span>
+          </div>
+          <div class="tel-row">
+            <span class="tel-label">MÉDIA</span>
+            <span class="tel-value" id="vel-med">-- km/h</span>
+          </div>
+        </div>
+
+        <div class="tel-divider"></div>
+
+        <div class="tel-block">
+          <div class="tel-row">
+            <span class="tel-label">ACELERAÇÃO</span>
+            <span class="tel-value" id="acel">-- m/s²</span>
+          </div>
+          <div class="tel-row">
+            <span class="tel-label">MODO</span>
+            <span class="tel-value" id="modo">--</span>
+          </div>
+          <div class="tel-row">
+            <span class="tel-label">RASTREIO</span>
+            <span class="tel-value" id="qualidade">--</span>
+          </div>
+        </div>
+
+        <div class="tel-divider" id="sensor-sep" style="display:none"></div>
+
+        <div class="tel-block" id="sensor-block" style="display:none">
+          <div class="tel-title-small">SENSOR CELULAR</div>
+          <div class="tel-row">
+            <span class="tel-label">GPS</span>
+            <span class="tel-value cyan" id="gps-kmh">-- km/h</span>
+          </div>
+          <div class="tel-row">
+            <span class="tel-label">ACCEL Y</span>
+            <span class="tel-value cyan" id="accel-y">-- m/s²</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Gauges -->
+    <div class="gauges-row">
+      <div class="gauge-box">
+        <div class="gauge-label">VELOCÍMETRO</div>
+        <canvas id="speedometer" width="220" height="220"></canvas>
+      </div>
+      <div class="gauge-box">
+        <div class="gauge-label">G-METER</div>
+        <canvas id="gmeter" width="220" height="220"></canvas>
+      </div>
+      <div class="gauge-box gauge-wide">
+        <div class="gauge-label">HISTÓRICO (km/h)</div>
+        <canvas id="historico" width="500" height="200"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════ EQUIPE ══════════════════ -->
+  <section id="equipe" class="section section-alt">
+    <div class="section-header">
+      <h2>NOSSA EQUIPE</h2>
+      <span class="section-sub">Os engenheiros por trás do NeuroDrive</span>
+    </div>
+
+    <div class="team-grid">
+      <div class="team-card">
+        <div class="team-avatar-wrap">
+          <img src="/assets/team/eduardo.jpg" alt="Eduardo"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+          <div class="team-avatar-placeholder" style="display:none;background:linear-gradient(135deg,#FFD600,#FF8800)">E</div>
+        </div>
+        <div class="team-name">Eduardo</div>
+        <div class="team-role">Visão Computacional</div>
+      </div>
+
+      <div class="team-card">
+        <div class="team-avatar-wrap">
+          <img src="/assets/team/daniel.jpg" alt="Daniel"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+          <div class="team-avatar-placeholder" style="display:none;background:linear-gradient(135deg,#00E5FF,#0055FF)">D</div>
+        </div>
+        <div class="team-name">Daniel</div>
+        <div class="team-role">Hardware & Eletrônica</div>
+      </div>
+
+      <div class="team-card">
+        <div class="team-avatar-wrap">
+          <img src="/assets/team/arthur.jpg" alt="Arthur"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+          <div class="team-avatar-placeholder" style="display:none;background:linear-gradient(135deg,#FF00FF,#8800FF)">A</div>
+        </div>
+        <div class="team-name">Arthur</div>
+        <div class="team-role">Software & Integração</div>
+      </div>
+
+      <div class="team-card">
+        <div class="team-avatar-wrap">
+          <img src="/assets/team/oliver.jpg" alt="Oliver"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+          <div class="team-avatar-placeholder" style="display:none;background:linear-gradient(135deg,#00FF88,#00AA44)">O</div>
+        </div>
+        <div class="team-name">Oliver</div>
+        <div class="team-role">Mecânica & Estrutura</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════ GALERIA ══════════════════ -->
+  <section id="galeria" class="section">
+    <div class="section-header">
+      <h2>GALERIA DA MAQUETE</h2>
+      <span class="section-sub">Maquete física em escala 1:30 · celeiro, hortas e lote</span>
+    </div>
+
+    <div id="gallery-grid" class="gallery-grid">
+      <div class="gallery-empty" id="gallery-empty">
+        Adicione fotos em <code>web/assets/gallery/</code> e reinicie o servidor.
+      </div>
+    </div>
+  </section>
+
+  <!-- Lightbox -->
+  <dialog id="lightbox">
+    <button class="lightbox-close" id="lightbox-close">✕</button>
+    <img id="lightbox-img" src="" alt="">
+    <div id="lightbox-caption"></div>
+  </dialog>
+
+  <!-- ══════════════════ FOOTER ══════════════════ -->
+  <footer>
+    <span>⬡ NEURODRIVE OS v3.0 &nbsp;·&nbsp; Escala 1:30 &nbsp;·&nbsp; Visão Computacional + Odometria Visual</span>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
