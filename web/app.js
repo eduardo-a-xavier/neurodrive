@@ -5,7 +5,10 @@ let sseAttempts = 0;
 function conectarSSE() {
   if (sse) sse.close();
 
-  sse = new EventSource('/api/telemetria');
+  const urlInput = document.getElementById('ip-tel')?.value.trim();
+  const sseUrl = urlInput ? urlInput : '/api/telemetria';
+
+  sse = new EventSource(sseUrl);
 
   sse.onopen = () => {
     sseAttempts = 0;
@@ -61,6 +64,8 @@ function atualizarTelemetria(d) {
   if (q > 30)      { elQual.textContent = `ÓTIMO (${q})`;  elQual.style.color = '#FFD600'; }
   else if (q > 10) { elQual.textContent = `MÉDIO (${q})`;  elQual.style.color = '#FFA500'; }
   else             { elQual.textContent = `FRACO (${q})`;   elQual.style.color = '#FF4444'; }
+
+  // Bateria (Valores fixos, sem atualização via SSE por enquanto)
 
   // Bloco sensor celular
   const sensorBlock = document.getElementById('sensor-block');
@@ -368,6 +373,77 @@ document.getElementById('lightbox-close').addEventListener('click', () => {
 document.getElementById('lightbox').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) e.currentTarget.close();
 });
+
+// ─── CAM CONTROLS & HUD ───────────────────────────────────────────────────────
+let videoStream = null;
+
+function updateHUDClock() {
+  const now = new Date();
+  const el = document.getElementById('hud-ts');
+  if (el) {
+    el.textContent = now.toLocaleTimeString('pt-BR', { hour12: false }) + '.' + String(now.getMilliseconds()).padStart(3,'0');
+  }
+}
+setInterval(updateHUDClock, 100);
+updateHUDClock();
+
+async function startWebcam() {
+  try {
+    stopFeed();
+    videoStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+    const vid = document.getElementById('feed-video');
+    vid.srcObject = videoStream;
+    vid.style.display = 'block';
+    
+    document.getElementById('stream').style.display = 'none';
+    document.getElementById('video-overlay').classList.remove('visible');
+    document.getElementById('hud').style.display = 'block';
+    
+    document.getElementById('btn-webcam').classList.add('active');
+    document.getElementById('btn-stop').style.display = 'block';
+  } catch (e) {
+    console.error('Erro webcam:', e);
+  }
+}
+
+function connectCam() {
+  const url = document.getElementById('ip-cam').value.trim();
+  if (!url) return;
+  stopFeed();
+  
+  const img = document.getElementById('stream');
+  img.src = url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
+  img.style.display = 'block';
+  
+  document.getElementById('video-overlay').classList.remove('visible');
+  document.getElementById('hud').style.display = 'block';
+  document.getElementById('btn-stop').style.display = 'block';
+}
+
+function stopFeed() {
+  if (videoStream) {
+    videoStream.getTracks().forEach(t => t.stop());
+    videoStream = null;
+  }
+  
+  const vid = document.getElementById('feed-video');
+  vid.srcObject = null;
+  vid.style.display = 'none';
+  
+  const img = document.getElementById('stream');
+  img.src = '';
+  img.style.display = 'none';
+  
+  document.getElementById('hud').style.display = 'none';
+  document.getElementById('video-overlay').classList.add('visible');
+  
+  document.getElementById('btn-webcam').classList.remove('active');
+  document.getElementById('btn-stop').style.display = 'none';
+}
+
+function reconnectTelemetry() {
+  conectarSSE();
+}
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 if ('serviceWorker' in navigator) {

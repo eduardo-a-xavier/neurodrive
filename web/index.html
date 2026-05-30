@@ -12,6 +12,10 @@
   <meta name="apple-mobile-web-app-title" content="NeuroDrive">
   <link rel="apple-touch-icon" href="/assets/icons/icon.svg">
 
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -34,13 +38,59 @@
       <span class="section-sub">Telemetria em tempo real · Escala 1:30</span>
     </div>
 
+    <!-- Gauges -->
+    <div class="gauges-row" style="margin-bottom: 16px;">
+      <div class="gauge-box">
+        <div class="gauge-label">VELOCÍMETRO</div>
+        <canvas id="speedometer" width="220" height="220"></canvas>
+      </div>
+      <div class="gauge-box">
+        <div class="gauge-label">G-METER</div>
+        <canvas id="gmeter" width="220" height="220"></canvas>
+      </div>
+      <div class="gauge-box gauge-wide">
+        <div class="gauge-label">HISTÓRICO (km/h)</div>
+        <canvas id="historico" width="500" height="200"></canvas>
+      </div>
+    </div>
+
     <div class="dash-main">
       <!-- Feed de vídeo -->
-      <div class="video-wrap">
-        <div class="video-label">FEED AO VIVO</div>
-        <img id="stream" src="/video" alt="Aguardando câmera...">
-        <div id="video-overlay" class="video-overlay">
-          <span>Sem sinal de câmera</span>
+      <div class="video-container">
+        <div class="video-wrap">
+          <div class="video-label">FEED AO VIVO</div>
+          <video id="feed-video" autoplay muted playsinline style="display:none; width: 100%; height: 100%; object-fit: cover; border-radius: 12px;"></video>
+          <img id="stream" src="/video" alt="Aguardando câmera...">
+          <div id="video-overlay" class="video-overlay">
+            <span>Sem sinal de câmera</span>
+          </div>
+          <!-- HUD Overlay -->
+          <div class="hud-overlay" id="hud" style="display:none">
+            <div class="hud-corner tl"></div>
+            <div class="hud-corner tr"></div>
+            <div class="hud-corner bl"></div>
+            <div class="hud-corner br"></div>
+            <div class="hud-crosshair"></div>
+            <div class="hud-ts" id="hud-ts">--:--:--.---</div>
+            <div class="hud-rec"><div class="hud-rec-dot"></div>REC</div>
+            <div class="hud-scale">ESCALA 1:30 · NEURODRIVE</div>
+          </div>
+        </div>
+
+        <!-- Video Controls (IP inputs) -->
+        <div class="video-controls">
+          <div class="control-row">
+            <span class="ctrl-label">CÂMERA IP:</span>
+            <input type="text" id="ip-cam" class="ctrl-input" placeholder="Ex: http://192.168.1.100:81/stream">
+            <button class="ctrl-btn" onclick="connectCam()">CONECTAR</button>
+            <button class="ctrl-btn" id="btn-webcam" onclick="startWebcam()">⬤ WEBCAM</button>
+            <button class="ctrl-btn" id="btn-stop" onclick="stopFeed()" style="display:none; background: rgba(244,63,94,0.2); color: #f43f5e; border-color: #f43f5e;">■ PARAR</button>
+          </div>
+          <div class="control-row">
+            <span class="ctrl-label">TELEMETRIA:</span>
+            <input type="text" id="ip-tel" class="ctrl-input" placeholder="Padrão: /api/telemetria">
+            <button class="ctrl-btn" onclick="reconnectTelemetry()">CONECTAR</button>
+          </div>
         </div>
       </div>
 
@@ -80,6 +130,28 @@
           </div>
         </div>
 
+        <div class="tel-divider"></div>
+
+        <div class="tel-block" id="bat-block">
+          <div class="tel-title-small">SISTEMA DE ENERGIA (ESTIMADO)</div>
+          <div class="tel-row">
+            <span class="tel-label">NÍVEL (Mín 20%)</span>
+            <span class="tel-value" id="bat-nivel" style="color: #10b981;">100 %</span>
+          </div>
+          <div class="tel-row">
+            <span class="tel-label">TENSÃO (Mín 9V / Máx 12.6V)</span>
+            <span class="tel-value" id="bat-tensao">12.6 V</span>
+          </div>
+          <div class="tel-row">
+            <span class="tel-label">CORRENTE (Máx 10A)</span>
+            <span class="tel-value" id="bat-corrente">2.5 A</span>
+          </div>
+          <div class="tel-row">
+            <span class="tel-label">POTÊNCIA (Máx 120W)</span>
+            <span class="tel-value" id="bat-potencia">31.5 W</span>
+          </div>
+        </div>
+
         <div class="tel-divider" id="sensor-sep" style="display:none"></div>
 
         <div class="tel-block" id="sensor-block" style="display:none">
@@ -96,75 +168,156 @@
       </div>
     </div>
 
-    <!-- Gauges -->
-    <div class="gauges-row">
-      <div class="gauge-box">
-        <div class="gauge-label">VELOCÍMETRO</div>
-        <canvas id="speedometer" width="220" height="220"></canvas>
+  </section>
+
+  <!-- ══════════════════ COMPETÊNCIAS & SIMULAÇÕES ══════════════════ -->
+  <section id="simulacoes" class="section">
+    <div class="section-header">
+      <h2>COMPETÊNCIAS & SIMULAÇÕES</h2>
+      <span class="section-sub">Análises de fenômenos físicos elétricos, magnéticos e oscilatórios (Metodologia Científica e Prática)</span>
+    </div>
+
+    <div class="sim-grid">
+      <!-- 1 -->
+      <div class="sim-card">
+        <div class="sim-img-wrap">
+          <img src="/assets/simulations/faraday_motor_response.png" alt="Lei de Faraday">
+        </div>
+        <div class="sim-content">
+          <h3>Lei de Faraday & Indutância</h3>
+          <p>Modelagem da força contra-eletromotriz do motor DC e avaliação dos fenômenos magnéticos da bobina.</p>
+          <div class="sim-tags">
+            <span class="tag">Analisar Fenômenos Eletromagnéticos</span>
+            <span class="tag">Condução de Experimentos</span>
+          </div>
+        </div>
       </div>
-      <div class="gauge-box">
-        <div class="gauge-label">G-METER</div>
-        <canvas id="gmeter" width="220" height="220"></canvas>
+      <!-- 2 -->
+      <div class="sim-card">
+        <div class="sim-img-wrap">
+          <img src="/assets/simulations/rlc_resonancia.png" alt="Circuito RLC">
+        </div>
+        <div class="sim-content">
+          <h3>Ressonância RLC</h3>
+          <p>Cálculo da frequência natural do sistema e compreensão de fenômenos oscilatórios sub e super amortecidos.</p>
+          <div class="sim-tags">
+            <span class="tag">Fenômenos Oscilatórios</span>
+            <span class="tag">Formular Soluções</span>
+          </div>
+        </div>
       </div>
-      <div class="gauge-box gauge-wide">
-        <div class="gauge-label">HISTÓRICO (km/h)</div>
-        <canvas id="historico" width="500" height="200"></canvas>
+      <!-- 3 -->
+      <div class="sim-card">
+        <div class="sim-img-wrap">
+          <img src="/assets/simulations/fft_analise_frequencia.png" alt="Análise FFT">
+        </div>
+        <div class="sim-content">
+          <h3>Análise Harmônica (FFT)</h3>
+          <p>Transformada de Fourier para identificar ruídos e componentes de frequência. Avaliação de THD (Total Harmonic Distortion).</p>
+          <div class="sim-tags">
+            <span class="tag">Metodologia Científica</span>
+            <span class="tag">Interpretar Resultados</span>
+          </div>
+        </div>
+      </div>
+      <!-- 4 -->
+      <div class="sim-card">
+        <div class="sim-img-wrap">
+          <img src="/assets/simulations/pwm_analise.png" alt="Sinal PWM">
+        </div>
+        <div class="sim-content">
+          <h3>Controle de Potência (PWM)</h3>
+          <p>Modulação por largura de pulso aplicada no acionamento eletrônico, analisando a resposta dinâmica da corrente.</p>
+          <div class="sim-tags">
+            <span class="tag">Novas Tecnologias</span>
+            <span class="tag">Projetos Práticos</span>
+          </div>
+        </div>
+      </div>
+      <!-- 5 -->
+      <div class="sim-card">
+        <div class="sim-img-wrap">
+          <img src="/assets/simulations/simulacao_3_eficiencia.png" alt="Eficiência do Motor">
+        </div>
+        <div class="sim-content">
+          <h3>Dinâmica e Eficiência (Motor DC)</h3>
+          <p>Simulação mecânica e elétrica do motor avaliando inércia, atrito de Coulomb e curva de eficiência energética.</p>
+          <div class="sim-tags">
+            <span class="tag">Trabalho Multidisciplinar</span>
+            <span class="tag">Dimensões Quantitativas</span>
+          </div>
+        </div>
+      </div>
+      <!-- 6 -->
+      <div class="sim-card">
+        <div class="sim-img-wrap">
+          <img src="/assets/simulations/analise_bateria.png" alt="Modelo da Bateria">
+        </div>
+        <div class="sim-content">
+          <h3>Modelo Bateria de Li-ion</h3>
+          <p>Estimativa de curva de descarga, limite de corrente e impactos da durabilidade energética no desempenho do projeto.</p>
+          <div class="sim-tags">
+            <span class="tag">Impactos Socioambientais</span>
+            <span class="tag">Modelagem Simbólica e Física</span>
+          </div>
+        </div>
       </div>
     </div>
   </section>
 
   <!-- ══════════════════ EQUIPE ══════════════════ -->
-  <section id="equipe" class="section section-alt">
+  <section id="equipe" class="section">
     <div class="section-header">
       <h2>NOSSA EQUIPE</h2>
       <span class="section-sub">Os engenheiros por trás do NeuroDrive</span>
     </div>
 
     <div class="team-grid">
-      <div class="team-card">
+      <div class="team-card team-card--lead">
         <div class="team-avatar-wrap">
           <img src="/assets/team/eduardo.jpg" alt="Eduardo"
                onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-          <div class="team-avatar-placeholder" style="display:none;background:linear-gradient(135deg,#FFD600,#FF8800)">E</div>
+          <div class="team-avatar-placeholder" style="display:none;background:linear-gradient(135deg,#0ea5e9,#0055FF)">💻</div>
         </div>
         <div class="team-name">Eduardo</div>
-        <div class="team-role">Visão Computacional</div>
+        <div class="team-role-badge">LEAD DEV</div>
+        <div class="team-role">Engenheiro de Software<br><span class="team-role-detail">Sistema digital completo — web, telemetria &amp; firmware</span><span class="team-role-detail">Colaboração na maquete física</span></div>
       </div>
 
       <div class="team-card">
         <div class="team-avatar-wrap">
           <img src="/assets/team/daniel.jpg" alt="Daniel"
                onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-          <div class="team-avatar-placeholder" style="display:none;background:linear-gradient(135deg,#00E5FF,#0055FF)">D</div>
+          <div class="team-avatar-placeholder" style="display:none;background:linear-gradient(135deg,#FF6B35,#CC2200)">⚡</div>
         </div>
         <div class="team-name">Daniel</div>
-        <div class="team-role">Hardware & Eletrônica</div>
+        <div class="team-role">Prototipagem Física<br><span class="team-role-detail">Eletrônica e Montagem</span></div>
       </div>
 
       <div class="team-card">
         <div class="team-avatar-wrap">
           <img src="/assets/team/arthur.jpg" alt="Arthur"
                onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-          <div class="team-avatar-placeholder" style="display:none;background:linear-gradient(135deg,#FF00FF,#8800FF)">A</div>
+          <div class="team-avatar-placeholder" style="display:none;background:linear-gradient(135deg,#7B68EE,#5500CC)">📐</div>
         </div>
         <div class="team-name">Arthur</div>
-        <div class="team-role">Software & Integração</div>
+        <div class="team-role">Prototipagem Física<br><span class="team-role-detail">Preparação e Logística</span></div>
       </div>
 
       <div class="team-card">
         <div class="team-avatar-wrap">
           <img src="/assets/team/oliver.jpg" alt="Oliver"
                onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-          <div class="team-avatar-placeholder" style="display:none;background:linear-gradient(135deg,#00FF88,#00AA44)">O</div>
+          <div class="team-avatar-placeholder" style="display:none;background:linear-gradient(135deg,#10b981,#006633)">🎨</div>
         </div>
         <div class="team-name">Oliver</div>
-        <div class="team-role">Mecânica & Estrutura</div>
+        <div class="team-role">Prototipagem Física<br><span class="team-role-detail">Pintura e Estrutura 3D</span></div>
       </div>
     </div>
   </section>
 
   <!-- ══════════════════ GALERIA ══════════════════ -->
-  <section id="galeria" class="section">
+  <section id="galeria" class="section section-alt">
     <div class="section-header">
       <h2>GALERIA DA MAQUETE</h2>
       <span class="section-sub">Maquete física em escala 1:30 · celeiro, hortas e lote</span>

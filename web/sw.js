@@ -1,4 +1,4 @@
-const CACHE = 'neurodrive-v1';
+const CACHE = 'neurodrive-v2';
 const SHELL = ['/', '/style.css', '/app.js', '/manifest.json'];
 
 self.addEventListener('install', e => {
@@ -21,6 +21,14 @@ self.addEventListener('fetch', e => {
     return;
   }
   e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request))
+    fetch(e.request)
+      .then(response => {
+        if (response && response.status === 200) {
+          const clone = response.clone();
+          caches.open(CACHE).then(cache => cache.put(e.request, clone));
+        }
+        return response;
+      })
+      .catch(() => caches.match(e.request))
   );
 });
