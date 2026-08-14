@@ -1,325 +1,159 @@
-"""
-ANÁLISE DE BATERIA E CONSUMO ENERGÉTICO
-Disciplina: Fenômenos Elétricos, Magnéticos e Oscilatórios
+"""Modelo simples de descarga da bateria do carrinho Kizumba 4x4."""
 
-Modela comportamento de bateria Li-po com dados reais do carrinho Kizumba.
-"""
+from pathlib import Path
 
-import numpy as np
 import matplotlib.pyplot as plt
-from scipy.integrate import odeint
+import numpy as np
 
-# ============================================================================
-# DADOS REAIS DA BATERIA
-# ============================================================================
 
 BATERIA = {
-    "voltagem_nominal": 3.7,      # V (Li-po 1S)
-    "energia_total": 1.85,         # Wh
-    "capacidade_mah": 500,        # mAh
-    "resistencia_interna": 0.5,    # Ω (estimativa para Li-po)
+    "voltagem_nominal": 3.7,
+    "energia_total": 1.85,
+    "capacidade_mah": 500,
+    "resistencia_interna": 0.5,
 }
 
-print("\n" + "="*70)
-print("ANÁLISE DE BATERIA - CARRINHO KIZUMBA 4X4")
-print("="*70)
+PASTA_GRAFICOS = Path(__file__).resolve().parent / "web" / "assets" / "simulations"
 
-print(f"\nEspecificações da bateria:")
-print(f"  Voltagem nominal: {BATERIA['voltagem_nominal']} V")
-print(f"  Energia total: {BATERIA['energia_total']} Wh")
-print(f"  Capacidade: {BATERIA['capacidade_mah']} mAh")
-print(f"  Resistência interna (estimada): {BATERIA['resistencia_interna']} Ω")
-
-# ============================================================================
-# CÁLCULOS BÁSICOS
-# ============================================================================
-
-capacidade_ah = BATERIA['capacidade_mah'] / 1000
-capacidade_coulombs = capacidade_ah * 3600
-
-print(f"\nConversões:")
-print(f"  Capacidade: {capacidade_ah} Ah = {capacidade_coulombs:.0f} C (Coulombs)")
-
-# ============================================================================
-# TEMPO DE FUNCIONAMENTO vs CORRENTE
-# ============================================================================
-
-print(f"\n" + "="*70)
-print("TEMPO DE FUNCIONAMENTO TEÓRICO")
-print("="*70)
-print(f"\nPara funcionamento contínuo (Lei de Peukert simplificada):")
-print(f"{'Corrente':>12} {'Potência':>12} {'Tempo':>15} {'Ciclo':>12}")
-print(f"{'-'*12} {'-'*12} {'-'*15} {'-'*12}")
-
-correntes = np.array([0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5])
-
-for I in correntes:
-    tempo_horas = capacidade_ah / I
-    tempo_minutos = tempo_horas * 60
-    
-    potencia = BATERIA['voltagem_nominal'] * I
-    
-    # Ciclo de funcionamento (% de capacidade por minuto)
-    if tempo_minutos > 0:
-        ciclo = 100 / tempo_minutos
-    else:
-        ciclo = 0
-    
-    print(f"{I:>10.2f}A {potencia:>10.2f}W {tempo_minutos:>12.1f} min {ciclo:>10.2f}%/min")
-
-# ============================================================================
-# MODELO DE DESCARGA DE BATERIA COM CORRENTE VARIÁVEL
-# ============================================================================
 
 class ModeloBateria:
-    """
-    Modelo simplificado de bateria Li-po.
-    
-    Considera:
-    - Queda de voltagem com corrente (resistência interna)
-    - Descarga não-linear (efeito Peukert)
-    - Voltagem mínima operacional (cutoff)
-    """
-    
+    """Modelo LiPo com descarga por carga acumulada e queda resistiva."""
+
     def __init__(self, V_nom=3.7, E_total=1.85, R_int=0.5, V_cutoff=2.5):
-        """
-        V_nom: Voltagem nominal [V]
-        E_total: Energia total [Wh]
-        R_int: Resistência interna [Ω]
-        V_cutoff: Voltagem mínima [V]
-        """
+        if V_nom <= 0 or E_total <= 0:
+            raise ValueError("tensão e energia devem ser positivas")
+        if R_int < 0 or V_cutoff < 0:
+            raise ValueError("resistência e cutoff não podem ser negativos")
+
         self.V_nom = V_nom
         self.E_total = E_total
         self.R_int = R_int
         self.V_cutoff = V_cutoff
-        self.Q_total = (E_total / V_nom) * 3600  # Carga em Coulombs
-        self.Q_discharged = 0  # Carga descarregada
-    
+        self.Q_total = (E_total / V_nom) * 3600
+        self.Q_discharged = 0.0
+
+    @property
+    def soc(self):
+        return max(0.0, min(1.0, 1 - self.Q_discharged / self.Q_total))
+
     def voltagem(self, corrente):
-        """
-        Calcula voltagem terminal com queda resistiva.
-        V_terminal = V_oc - R_int * I
-        """
-        # Voltagem de circuito aberto (aproximada)
-        SOC = 1 - (self.Q_discharged / self.Q_total)  # State of Charge
-        
-        # Li-po: voltagem varia ~3.0V (vazio) a ~4.2V (cheio)
-        # Simplificado: linear entre 3.0V e 4.2V
-        V_oc = 3.0 + (4.2 - 3.0) * SOC
-        
-        # Queda resistiva
-        V_terminal = V_oc - self.R_int * corrente
-        
-        return V_terminal, V_oc
-    
+        """Retorna tensão terminal e tensão de circuito aberto."""
+        V_oc = 3.0 + (4.2 - 3.0) * self.soc
+        return V_oc - self.R_int * corrente, V_oc
+
     def descarga_step(self, corrente, dt):
-        """
-        Avança simulação em dt segundos com corrente I.
-        """
+        """Avança a descarga; retorna ``None`` ao atingir vazio ou cutoff."""
+        if corrente < 0 or dt <= 0:
+            raise ValueError("corrente deve ser não negativa e dt deve ser positivo")
         if self.Q_discharged >= self.Q_total:
-            return None  # Bateria vazia
-        
-        # Descarga em Coulombs
-        dQ = corrente * dt
-        self.Q_discharged += dQ
-        
-        # Garante não ultrapassar capacidade
-        if self.Q_discharged > self.Q_total:
-            self.Q_discharged = self.Q_total
-        
+            return None
+
+        V_terminal, _ = self.voltagem(corrente)
+        if V_terminal <= self.V_cutoff:
+            return None
+
+        self.Q_discharged = min(
+            self.Q_total,
+            self.Q_discharged + corrente * dt,
+        )
         V_terminal, V_oc = self.voltagem(corrente)
-        
-        # Energia consumida
-        energia = V_terminal * corrente * dt / 3600  # Wh
-        
         return {
-            'V_terminal': V_terminal,
-            'V_oc': V_oc,
-            'energia': energia,
-            'SOC': 1 - (self.Q_discharged / self.Q_total)
+            "V_terminal": V_terminal,
+            "V_oc": V_oc,
+            "energia": V_terminal * corrente * dt / 3600,
+            "SOC": self.soc,
         }
 
-# ============================================================================
-# SIMULAÇÃO DE DESCARGA
-# ============================================================================
 
-print(f"\n" + "="*70)
-print("SIMULAÇÃO DE DESCARGA COM CORRENTE VARIÁVEL")
-print("="*70)
+def simular_descarga(corrente_por_tempo, dt=0.1, tempo_maximo=3600):
+    """Simula uma bateria nova para uma função ``corrente_por_tempo(t)``."""
+    bateria = ModeloBateria()
+    tempo = []
+    tensao = []
+    corrente = []
+    soc = []
+    energia_total = 0.0
+    instante = 0.0
 
-# Scenario 1: Corrente constante
-bateria = ModeloBateria()
-tempo = []
-V_terminal = []
-V_oc = []
-SOC = []
-energia_consumida_total = 0
+    while instante <= tempo_maximo:
+        corrente_atual = corrente_por_tempo(instante)
+        resultado = bateria.descarga_step(corrente_atual, dt)
+        if resultado is None:
+            break
+        tempo.append(instante)
+        tensao.append(resultado["V_terminal"])
+        corrente.append(corrente_atual)
+        soc.append(resultado["SOC"])
+        energia_total += resultado["energia"]
+        instante += dt
 
-corrente_constante = 0.5  # A
+    return {
+        "tempo": np.asarray(tempo),
+        "tensao": np.asarray(tensao),
+        "corrente": np.asarray(corrente),
+        "soc": np.asarray(soc),
+        "energia_total": energia_total,
+    }
 
-print(f"\nCenário 1: Corrente constante de {corrente_constante}A")
 
-t = 0
-dt = 0.1  # 0.1 segundos
-while True:
-    resultado = bateria.descarga_step(corrente_constante, dt)
-    if resultado is None:
-        break
-    
-    tempo.append(t)
-    V_terminal.append(resultado['V_terminal'])
-    V_oc.append(resultado['V_oc'])
-    SOC.append(resultado['SOC'])
-    energia_consumida_total += resultado['energia']
-    
-    t += dt
-    
-    if t > 3600:  # Limite 1 hora
-        break
+def gerar_cenarios():
+    constante = simular_descarga(lambda _t: 0.5)
+    variavel = simular_descarga(lambda t: 0.8 if t < 1.0 else 0.3)
+    return constante, variavel
 
-tempo = np.array(tempo)
-V_terminal = np.array(V_terminal)
-SOC = np.array(SOC)
 
-print(f"  Tempo total: {tempo[-1]/60:.1f} minutos")
-print(f"  Energia consumida: {energia_consumida_total:.2f} Wh")
-print(f"  Voltagem final: {V_terminal[-1]:.2f}V")
+def plotar_analise_bateria(caminho=None):
+    """Gera o gráfico usado pelo dashboard e retorna seu caminho."""
+    constante, variavel = gerar_cenarios()
+    fig, axes = plt.subplots(2, 2, figsize=(13, 10))
 
-# Scenario 2: Corrente variável (simulando aceleração + regime constante)
-bateria2 = ModeloBateria()
-tempo2 = []
-V_terminal2 = []
-corrente_sim = []
-SOC2 = []
+    axes[0, 0].plot(constante["tempo"] / 60, constante["tensao"], "b-", linewidth=2)
+    axes[0, 0].axhline(BATERIA["voltagem_nominal"], color="g", linestyle="--")
+    axes[0, 0].axhline(2.5, color="r", linestyle="--")
+    axes[0, 0].set_title("Descarga com corrente constante (0,5 A)")
+    axes[0, 0].set_ylabel("Tensão [V]")
+    axes[0, 0].grid(True, alpha=0.3)
 
-print(f"\nCenário 2: Corrente variável (aceleração + regime)")
+    axes[0, 1].plot(constante["tempo"] / 60, constante["soc"] * 100, "g-")
+    axes[0, 1].set_title("Nível de carga — corrente constante")
+    axes[0, 1].set_ylabel("Carga [%]")
+    axes[0, 1].set_ylim(0, 105)
+    axes[0, 1].grid(True, alpha=0.3)
 
-t = 0
-dt = 0.1
-while True:
-    # Primeiro 1 segundo: aceleração (I = 0.8A)
-    # Depois: regime constante (I = 0.3A)
-    if t < 1.0:
-        I = 0.8
-    else:
-        I = 0.3
-    
-    resultado = bateria2.descarga_step(I, dt)
-    if resultado is None:
-        break
-    
-    tempo2.append(t)
-    V_terminal2.append(resultado['V_terminal'])
-    corrente_sim.append(I)
-    SOC2.append(resultado['SOC'])
-    
-    t += dt
-    
-    if t > 3600:
-        break
+    ax_corrente = axes[1, 0]
+    ax_tensao = ax_corrente.twinx()
+    ax_corrente.plot(variavel["tempo"] / 60, variavel["corrente"], "r-")
+    ax_tensao.plot(variavel["tempo"] / 60, variavel["tensao"], "b-")
+    ax_corrente.set_title("Aceleração e regime constante")
+    ax_corrente.set_xlabel("Tempo [min]")
+    ax_corrente.set_ylabel("Corrente [A]", color="r")
+    ax_tensao.set_ylabel("Tensão [V]", color="b")
+    ax_corrente.grid(True, alpha=0.3)
 
-tempo2 = np.array(tempo2)
-V_terminal2 = np.array(V_terminal2)
+    axes[1, 1].plot(variavel["tempo"] / 60, variavel["soc"] * 100, "g-")
+    axes[1, 1].set_title("Nível de carga — cenário variável")
+    axes[1, 1].set_xlabel("Tempo [min]")
+    axes[1, 1].set_ylabel("Carga [%]")
+    axes[1, 1].set_ylim(0, 105)
+    axes[1, 1].grid(True, alpha=0.3)
 
-print(f"  Tempo total: {tempo2[-1]/60:.1f} minutos")
-print(f"  Voltagem final: {V_terminal2[-1]:.2f}V")
+    destino = Path(caminho) if caminho else PASTA_GRAFICOS / "analise_bateria.png"
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(destino, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return destino
 
-# ============================================================================
-# GRÁFICOS
-# ============================================================================
 
-fig, axes = plt.subplots(2, 2, figsize=(13, 10))
+def imprimir_resumo():
+    capacidade_ah = BATERIA["capacidade_mah"] / 1000
+    constante, variavel = gerar_cenarios()
+    print("ANÁLISE DE BATERIA — CARRINHO KIZUMBA 4X4")
+    print(f"Capacidade: {capacidade_ah:.2f} Ah")
+    print(f"Cenário 0,5 A: {constante['tempo'][-1] / 60:.1f} min")
+    print(f"Cenário variável: {variavel['tempo'][-1] / 60:.1f} min")
 
-# Gráfico 1: Voltagem vs Tempo (corrente constante)
-axes[0, 0].plot(tempo/60, V_terminal, 'b-', linewidth=2, label='V_terminal')
-axes[0, 0].axhline(y=BATERIA['voltagem_nominal'], color='g', linestyle='--', 
-                   label='V_nominal', alpha=0.7)
-axes[0, 0].axhline(y=2.5, color='r', linestyle='--', label='Cutoff (2.5V)', alpha=0.7)
-axes[0, 0].set_ylabel('Voltagem [V]', fontsize=11)
-axes[0, 0].set_title(f'Descarga com Corrente Constante ({corrente_constante}A)', fontsize=12, fontweight='bold')
-axes[0, 0].grid(True, alpha=0.3)
-axes[0, 0].legend()
-axes[0, 0].set_ylim([2.0, 4.5])
 
-# Gráfico 2: State of Charge
-axes[0, 1].plot(tempo/60, SOC*100, 'g-', linewidth=2.5)
-axes[0, 1].set_ylabel('State of Charge (%)', fontsize=11)
-axes[0, 1].set_title('Nível de Carga da Bateria', fontsize=12, fontweight='bold')
-axes[0, 1].grid(True, alpha=0.3)
-axes[0, 1].set_ylim([0, 105])
-
-# Gráfico 3: Corrente e Voltagem (cenário variável)
-ax1 = axes[1, 0]
-ax2 = ax1.twinx()
-
-line1 = ax1.plot(tempo2/60, corrente_sim, 'r-', linewidth=2.5, label='Corrente')
-ax1.set_ylabel('Corrente [A]', fontsize=11, color='r')
-ax1.tick_params(axis='y', labelcolor='r')
-ax1.set_ylim([0, 1.0])
-
-line2 = ax2.plot(tempo2/60, V_terminal2, 'b-', linewidth=2.5, label='Voltagem')
-ax2.set_ylabel('Voltagem [V]', fontsize=11, color='b')
-ax2.tick_params(axis='y', labelcolor='b')
-ax2.set_ylim([2.0, 4.5])
-
-ax1.set_xlabel('Tempo [minutos]', fontsize=11)
-ax1.set_title('Cenário com Aceleração + Regime Constante', fontsize=12, fontweight='bold')
-ax1.grid(True, alpha=0.3)
-
-# Gráfico 4: State of Charge (variável)
-axes[1, 1].plot(tempo2/60, np.array(SOC2)*100, 'g-', linewidth=2.5)
-axes[1, 1].set_ylabel('State of Charge (%)', fontsize=11)
-axes[1, 1].set_xlabel('Tempo [minutos]', fontsize=11)
-axes[1, 1].set_title('Nível de Carga - Cenário Variável', fontsize=12, fontweight='bold')
-axes[1, 1].grid(True, alpha=0.3)
-axes[1, 1].set_ylim([0, 105])
-
-plt.tight_layout()
-plt.savefig('./analise_bateria.png', dpi=150, bbox_inches='tight')
-print(f"\n✓ Gráfico salvo: analise_bateria.png")
-plt.close()
-
-# ============================================================================
-# RECOMENDAÇÕES
-# ============================================================================
-
-print("\n" + "="*70)
-print("RECOMENDAÇÕES PARA COLETA DE DADOS")
-print("="*70)
-
-print("""
-Para CALIBRAR a simulação com dados reais, você PRECISA medir:
-
-1. VOLTAGEM REAL DA BATERIA (Essencial):
-   - Use um multímetro em modo "Voltagem DC"
-   - Meça com carrinho parado
-   - Meça durante aceleração máxima
-   - Anote a voltagem inicial e após usar por 10 minutos
-
-2. AUTONOMIA DO CARRINHO:
-   - Cronômetro: quanto tempo o carrinho funciona até parar?
-   - Isso permite calcular corrente média: I_média = capacidade / tempo
-
-3. VELOCIDADE E ACELERAÇÃO:
-   - Video em 60fps: cronometra quanto tempo leva pra atingir velocidade máxima
-   - Distância em 1 segundo: meça com régua/fita métrica
-   - Isso valida a simulação de dinâmica do motor
-
-4. CORRENTE CONSUMIDA (Ideal):
-   - Multímetro em série na bateria (desconecta um fio, insere multímetro)
-   - Corrente parado (só fricção)
-   - Corrente acelerando (máximo)
-   - Corrente em regime constante
-
-5. CONSUMO DE ENERGIA:
-   - Cálculo: E = Integral(V * I * dt)
-   - Compare: energia teórica vs energia medida
-   
-Com esses dados, você consegue:
-  ✓ Validar que o modelo está correto
-  ✓ Prever autonomia em diferentes cenários
-  ✓ Explicar perdas de energia (dissipação térmica)
-  ✓ Fazer relatório técnico sólido para a UC
-""")
-
-print("="*70)
+if __name__ == "__main__":
+    imprimir_resumo()
+    print(f"Gráfico salvo: {plotar_analise_bateria()}")
