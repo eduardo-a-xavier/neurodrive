@@ -461,20 +461,28 @@ async function connectCam() {
   stopFeed();
   
   // Envia URL pro backend para ele processar a telemetria
+  let normalizedUrl;
   try {
-    await fetch('/api/config_camera', {
+    const response = await fetch('/api/config_camera', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: url })
     });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'URL de câmera inválida');
+    normalizedUrl = data.url;
   } catch (e) {
     console.error('Erro ao configurar câmera no backend', e);
+    const overlay = document.getElementById('video-overlay');
+    overlay.querySelector('span').textContent = e.message;
+    overlay.classList.add('visible');
+    return;
   }
 
   const img = document.getElementById('stream');
   // Estabelece conexão direta com o feed de vídeo, reduzindo o processamento no backend
   // e mitigando a latência da interface.
-  img.src = url;
+  img.src = normalizedUrl;
   img.style.display = 'block';
   
   document.getElementById('video-overlay').classList.remove('visible');
@@ -572,25 +580,13 @@ drawHistorico([0, 0]);
 carregarGaleria();
 conectarSSE();
 
-// ─── LIGHTBOX (EXPANDIR GRÁFICOS) ─────────────────────────────────────────────
-const lightbox = document.getElementById('lightbox');
-const lightboxImg = document.getElementById('lightbox-img');
-const btnClose = document.getElementById('lightbox-close');
+// Gráficos e minimapa reutilizam o mesmo lightbox da galeria.
+document.body.addEventListener('click', (e) => {
+  if (e.target.matches('.sim-img-wrap img, .map-img-wrap img')) {
+    abrirLightbox(e.target.src, e.target.alt);
+  }
+});
 
-if (lightbox && btnClose) {
-  btnClose.addEventListener('click', () => lightbox.close());
-  lightbox.addEventListener('click', (e) => {
-    if (e.target === lightbox) lightbox.close();
-  });
-
-  document.body.addEventListener('click', (e) => {
-    // Intercepta imagens dos graficos, minimapa e galeria
-    if (e.target.matches('.sim-img-wrap img, .map-img-wrap img, .gallery-item img')) {
-      lightboxImg.src = e.target.src;
-      lightbox.showModal();
-    }
-  });
-
-  // Mostra ícone de clique para expandir nos gráficos
-  document.querySelectorAll('.sim-img-wrap img').forEach(img => img.style.cursor = 'zoom-in');
-}
+document.querySelectorAll('.sim-img-wrap img').forEach(img => {
+  img.style.cursor = 'zoom-in';
+});
