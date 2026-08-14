@@ -10,6 +10,7 @@ Modelo de Motor DC simplificado com:
 
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 from scipy.integrate import odeint, trapezoid
 from scipy.optimize import minimize
 
@@ -96,11 +97,12 @@ class MotorDC:
         # Torque magnético
         tau_mag = self.K_t * i
         
-        # Atrito (sempre opõe movimento)
-        if abs(omega) > 0.01:  # Se motor está girando
-            tau_atrito = self.b_visc * omega + np.sign(omega) * self.tau_coulomb
-        else:
-            tau_atrito = 0
+        # Atrito sempre opõe o movimento. A transição suave evita a
+        # descontinuidade numérica de trocar bruscamente o sinal em omega=0.
+        tau_atrito = (
+            self.b_visc * omega
+            + self.tau_coulomb * np.tanh(omega / 0.01)
+        )
         
         # Equação mecânica: dω/dt = (τ_mag - τ_atrito) / J
         d_omega_dt = (tau_mag - tau_atrito) / self.J
@@ -131,7 +133,13 @@ class MotorDC:
             V_func = lambda t: np.interp(t, tempo, voltagem)
         
         # Resolve ODE
-        solucao = odeint(self.sistema, estado_inicial, tempo, args=(V_func,))
+        solucao = odeint(
+            self.sistema,
+            estado_inicial,
+            tempo,
+            args=(V_func,),
+            mxstep=5000,
+        )
         
         corrente = solucao[:, 0]
         omega = solucao[:, 1]
@@ -156,8 +164,12 @@ class MotorDC:
         """Eficiência do motor = P_mec / P_elec"""
         p_mec = np.abs(self.potencia_mecanica(corrente, omega))
         p_elec = np.abs(self.potencia_eletrica(voltagem, corrente))
-        # Evita divisão por zero
-        return np.where(p_elec > 0.01, p_mec / p_elec, 0)
+        return np.divide(
+            p_mec,
+            p_elec,
+            out=np.zeros_like(p_mec, dtype=float),
+            where=p_elec > 0.01,
+        )
 
 
 # ============================================================================
@@ -203,8 +215,9 @@ def plot_simulacao_basica():
     axes[2].legend()
     
     plt.tight_layout()
-    plt.savefig('./simulacao_1_voltagens.png', dpi=150, bbox_inches='tight')
-    print("✓ Gráfico salvo: simulacao_1_voltagens.png")
+    destino = Path(__file__).resolve().parent / "web/assets/simulations/simulacao_1_voltagens.png"
+    plt.savefig(destino, dpi=150, bbox_inches='tight')
+    print(f"✓ Gráfico salvo: {destino}")
     plt.close()
 
 
@@ -262,8 +275,9 @@ def plot_efeito_atrito():
     axes[1, 1].legend(fontsize=9)
     
     plt.tight_layout()
-    plt.savefig('./simulacao_2_atrito.png', dpi=150, bbox_inches='tight')
-    print("✓ Gráfico salvo: simulacao_2_atrito.png")
+    destino = Path(__file__).resolve().parent / "web/assets/simulations/simulacao_2_atrito.png"
+    plt.savefig(destino, dpi=150, bbox_inches='tight')
+    print(f"✓ Gráfico salvo: {destino}")
     plt.close()
 
 
@@ -328,8 +342,9 @@ def plot_eficiencia():
     axes[1, 1].set_ylim([0, 100])
     
     plt.tight_layout()
-    plt.savefig('./simulacao_3_eficiencia.png', dpi=150, bbox_inches='tight')
-    print("✓ Gráfico salvo: simulacao_3_eficiencia.png")
+    destino = Path(__file__).resolve().parent / "web/assets/simulations/simulacao_3_eficiencia.png"
+    plt.savefig(destino, dpi=150, bbox_inches='tight')
+    print(f"✓ Gráfico salvo: {destino}")
     plt.close()
 
 

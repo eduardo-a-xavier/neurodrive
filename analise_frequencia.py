@@ -22,6 +22,7 @@ Interpretação:
 
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 from scipy.fft import fft, fftfreq
 from scipy.signal import windows
 
@@ -120,8 +121,11 @@ class AnalisadorFrequencia:
         """
         Encontra frequências dominantes (picos) no espectro.
         """
-        # Normalizar
-        mag_norm = magnitude / np.max(magnitude)
+        magnitude_maxima = np.max(magnitude) if len(magnitude) else 0
+        if magnitude_maxima <= 0:
+            return freqs[:0], magnitude[:0], np.array([], dtype=int)
+
+        mag_norm = magnitude / magnitude_maxima
         
         # Encontrar picos acima de threshold
         picos_idx = np.where(mag_norm > threshold)[0]
@@ -148,10 +152,13 @@ class AnalisadorFrequencia:
         if I_1 < 1e-6:
             return 0
         
-        # Somar quadrado das harmônicas (acima de 2×fundamental)
-        idx_harmonicas = np.where((freqs > freq_fundamental * 1.5) & 
-                                  (freqs < freq_fundamental * 50))[0]
-        
+        frequencia_maxima = freqs[-1]
+        harmonicas = np.arange(2, int(frequencia_maxima / freq_fundamental) + 1)
+        idx_harmonicas = [
+            int(np.argmin(np.abs(freqs - n * freq_fundamental)))
+            for n in harmonicas
+        ]
+
         soma_harmonicas_sq = np.sum(magnitude[idx_harmonicas]**2)
         
         thd = (np.sqrt(soma_harmonicas_sq) / I_1) * 100
@@ -255,8 +262,9 @@ def plotar_fft_corrente():
     axes[1, 1].grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('./fft_analise_frequencia.png', dpi=300, bbox_inches='tight')
-    print("\n✓ Gráfico salvo: fft_analise_frequencia.png")
+    destino = Path(__file__).resolve().parent / "web/assets/simulations/fft_analise_frequencia.png"
+    plt.savefig(destino, dpi=300, bbox_inches='tight')
+    print(f"\n✓ Gráfico salvo: {destino}")
     plt.close()
 
 
