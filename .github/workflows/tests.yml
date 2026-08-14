@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      # opencv-python (nao-headless) precisa destas libs para importar; sem
+      # elas o import falha, o importorskip de tests/test_runtime.py engole o
+      # erro e a suite fica verde escondendo os testes da pipeline.
+      - run: sudo apt-get update && sudo apt-get install -y libgl1 libglib2.0-0
+
+      - run: pip install -r requirements-dev.txt
+
+      # Falha alto e claro se o cv2 nao importar, em vez de virar skip silencioso.
+      - run: python -c "import cv2, flask; print('cv2', cv2.__version__)"
+
+      - run: python -m pytest
+        env:
+          MPLBACKEND: Agg
