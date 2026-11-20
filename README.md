@@ -1,249 +1,277 @@
 <div align="center">
 
 # ⬡ NeuroDrive
-### Plataforma Experimental de IoT e Visão Computacional
 
-*Solução Digital (A3) — Fenômenos Elétricos, Magnéticos e Oscilatórios*  
-*UniRitter 2026/1 · 🥉 3º Lugar — A Jornada UniRitter 2026 · Certificado de Honra ao Mérito*
+### Real-time visual odometry and telemetry for a 1:24 scale model, powered by Lucas-Kanade optical flow
+
+🥉 **3rd place — A Jornada UniRitter 2026** · Honor certificate
 
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)
 ![OpenCV](https://img.shields.io/badge/OpenCV-4.8+-5C3EE8?style=flat-square&logo=opencv&logoColor=white)
 ![Flask](https://img.shields.io/badge/Flask-3.0+-000000?style=flat-square&logo=flask&logoColor=white)
 ![SciPy](https://img.shields.io/badge/SciPy-1.11+-8CAAE6?style=flat-square&logo=scipy&logoColor=white)
+![PWA](https://img.shields.io/badge/Dashboard-PWA-5A0FC8?style=flat-square&logo=pwa&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
+
+[Português (BR)](README.pt-BR.md) · [Quick start](#-quick-start) · [Architecture](#-architecture) · [API](#-api-reference) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
 ---
 
-## O que é
+## 🎯 The problem
 
-NeuroDrive é um sistema embarcado de telemetria que integra **visão computacional**, **sensores de smartphone** e **simulações eletromagnéticas** aplicadas a uma maquete física na escala **1:24**.
+A small scale model has no speedometer, no GPS lock indoors and no room for dedicated sensors. NeuroDrive turns **a regular smartphone** into the whole instrument cluster: the phone's camera streams video over Wi-Fi, and a Python server estimates speed and acceleration from the **motion of the floor** in each frame.
 
-A câmera do celular transmite vídeo via Wi-Fi para um servidor Flask, que processa cada frame em tempo real usando o algoritmo de **Lucas-Kanade (Optical Flow)** para extrair odometria visual — velocidade instantânea, aceleração e histórico de corrida. Os dados são transmitidos ao dashboard via **SSE (Server-Sent Events)** e exibidos num velocímetro HUD renderizado com OpenCV.
+In parallel, SciPy simulations model the electrical and magnetic phenomena of the car's DC motor (back-EMF, RLC resonance, FFT harmonics, PWM and battery discharge), which is the physics behind the course this project was built for.
 
-Em paralelo, scripts SciPy simulam os fenômenos eletromagnéticos reais do motor e circuito: Força Contra-Eletromotriz, ressonância RLC e análise de harmônicas por FFT.
+## ✨ Features
 
----
+- **Visual odometry** with Lucas-Kanade optical flow (`cv2.calcOpticalFlowPyrLK`) over a trapezoidal region of interest.
+- **px → mm calibration**, persisted in `calibracao_neurodrive.json`.
+- **Five odometry modes:** `real`, `sensor`, `listras`, `demo`, `simulado`.
+- **Live dashboard (PWA)** fed by Server-Sent Events at 10 Hz: speed, average, peak, acceleration, history chart.
+- **MJPEG stream** with an OpenCV-rendered HUD (speedometer or cyber layout).
+- **Smartphone sensor fusion:** accelerometer and GPS speed via [Sensor Logger](https://apps.apple.com/app/sensor-logger/id1531582925).
+- **Five physics simulations** (motor, RLC, FFT, PWM, battery) that generate PNG plots.
 
-## Fotos da Maquete
+## 📸 The model
 
 <div align="center">
 
-| Vista Frontal | Perspectiva Lateral |
+| Front view | Side perspective |
 |:---:|:---:|
-| ![Frente](web/assets/gallery/maquete_frente_celeiro.jpg) | ![Lateral](web/assets/gallery/maquete_perspectiva_lateral.jpg) |
-| Vista Direita | Vista Esquerda |
-| ![Direita](web/assets/gallery/maquete_vista_direita.jpg) | ![Esquerda](web/assets/gallery/maquete_vista_esquerda.jpg) |
+| ![Front](web/assets/gallery/maquete_frente_celeiro.jpg) | ![Side](web/assets/gallery/maquete_perspectiva_lateral.jpg) |
+| **Right view** | **Left view** |
+| ![Right](web/assets/gallery/maquete_vista_direita.jpg) | ![Left](web/assets/gallery/maquete_vista_esquerda.jpg) |
 
 </div>
 
----
+## 🏗 Architecture
 
-## Arquitetura do Sistema
+```mermaid
+flowchart LR
+    subgraph Phone["📱 Smartphone"]
+        CAM["IP Webcam<br/>/video (MJPEG)"]
+        SENS["Sensor Logger<br/>accelerometer + GPS"]
+    end
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  SMARTPHONE                                                 │
-│  ┌──────────────┐   ┌─────────────────┐                    │
-│  │ IP Webcam    │   │  Sensor Logger  │                    │
-│  │ /video (MJPEG)│  │  Acelerômetro   │                    │
-│  │ /shot.jpg    │   │  GPS Speed      │                    │
-│  └──────┬───────┘   └────────┬────────┘                    │
-└─────────┼────────────────────┼────────────────────────────-┘
-          │ HTTP Wi-Fi         │ HTTP POST /data
-          ▼                    ▼
-┌─────────────────────────────────────────────────────────────┐
-│  WEB_SERVER.PY (Flask)                                      │
-│                                                             │
-│  AsyncIPCamera ──► neurodrive_pipeline.py                   │
-│  (Zero-Delay)       │                                       │
-│                     │  OdometriaVisual                      │
-│                     │  ├─ Lucas-Kanade Optical Flow         │
-│                     │  ├─ Calibração px→mm persistida       │
-│                     │  ├─ Modo: real / sensor / listras     │
-│                     │  └─ HUD velocímetro (OpenCV)          │
-│                     │                                       │
-│  /video ────────────┤  MJPEG stream                        │
-│  /api/telemetria ───┘  SSE 10Hz (JSON)                      │
-│  /api/config_camera    POST                                 │
-└─────────────────────────────────────────────────────────────┘
-          │
-          ▼
-┌─────────────────────────┐
-│  web/index.html          │
-│  Dashboard PWA           │
-│  Velocímetro · G-meter   │
-│  Histórico · Telemetria  │
-└─────────────────────────┘
+    subgraph Server["🖥 web_server.py (Flask)"]
+        AIC["AsyncIPCamera<br/>latest-frame capture"]
+        ODO["OdometriaVisual<br/>Lucas-Kanade · px→mm · HUD"]
+        SSE["/api/telemetria<br/>SSE 10 Hz"]
+        MJ["/video<br/>MJPEG + HUD"]
+        SRV["Sensor HTTP server<br/>POST /data :8000"]
+    end
+
+    subgraph UI["🌐 web/ (PWA dashboard)"]
+        DASH["Speedometer · history · telemetry"]
+    end
+
+    CAM -- "HTTP over Wi-Fi" --> AIC --> ODO
+    SENS -- "HTTP POST /data" --> SRV --> ODO
+    ODO --> SSE --> DASH
+    ODO --> MJ --> DASH
 ```
 
----
+## 🚀 Quick start
 
-## Módulos de Simulação (Física Aplicada)
-
-Os scripts a seguir resolvem numericamente os fenômenos eletromagnéticos do motor DC do carrinho (RENLONG 14500, 3.7V/500mAh, R=3Ω).
-
-### `motor_simulation_v2_faraday.py` — Lei de Faraday e BEMF
-
-Modelo eletromagnético completo via `scipy.integrate.odeint`:
-
-```
-V_entrada = I×R + L×(dI/dt) + ε_induzida
-ε_induzida = K_e × ω          (Força Contra-Eletromotriz — Lei de Faraday)
-τ = K_t × I                   (Torque)
-J×(dω/dt) = τ - b×ω           (Dinâmica rotacional)
-```
-
-Com motor travado (ω=0): I_max = V/R = 3.0/3.0 = **1.0 A**  
-Em regime estacionário (ω>0): corrente cai conforme BEMF cresce.
-
-![Resposta Faraday](web/assets/simulations/faraday_motor_response.png)
-
----
-
-### `circuito_rlc.py` — Ressonância e Amortecimento
-
-Circuito RLC série com parâmetros medidos do carrinho:
-
-| Parâmetro | Valor |
-|---|---|
-| R (motor) | 3 Ω |
-| L (indutância bobina) | 0,5 mH |
-| C (capacitor filtro) | 100 µF |
-| **f₀ = 1/(2π√LC)** | **~225 Hz** |
-| ζ = R/(2√(L/C)) | Sub-amortecido (oscilatório) |
-
-![RLC](web/assets/simulations/rlc_resonancia.png)
-
----
-
-### `analise_frequencia.py` — FFT e Harmônicas
-
-Análise espectral da corrente do motor usando Transformada Rápida de Fourier:
-
-```
-X[k] = Σ(n=0 a N-1) x[n] × e^(-j2πkn/N)
-```
-
-- Janela de Hanning para redução de vazamento espectral  
-- Cálculo de THD (Total Harmonic Distortion)  
-- Detecção de 3ª e 5ª harmônicas (ruído de chaveamento PWM)
-
-![FFT](web/assets/simulations/fft_analise_frequencia.png)
-
----
-
-### `pwm_analise.py` — Controle PWM
-
-Modelagem do controle de potência via Modulação por Largura de Pulso aplicada ao motor DC (Eletrodinâmica).
-
-![PWM](web/assets/simulations/pwm_analise.png)
-
----
-
-### `analise_bateria.py` — Curva de Descarga
-
-Simulação da autonomia e curva de descarga da bateria LiPo 3.7V/500mAh.
-
-![Bateria](web/assets/simulations/analise_bateria.png)
-
----
-
-## Pipeline de Visão Computacional
-
-**`neurodrive_pipeline.py` — Classe `OdometriaVisual`**
-
-```python
-# 1. Downscale 50% para reduzir carga matricial
-frame_small = cv2.resize(frame, (w//2, h//2))
-
-# 2. Região de interesse trapezoidal (perspectiva de pista)
-mascara = np.zeros_like(frame_small)
-cv2.fillPoly(mascara, pts_trapezio, 255)
-
-# 3. Lucas-Kanade Optical Flow
-pontos_novos, status, _ = cv2.calcOpticalFlowPyrLK(
-    frame_anterior, frame_atual, pontos_rastreados, None,
-    winSize=(15,15), maxLevel=2
-)
-
-# 4. Mediana dos deslocamentos → velocidade física
-desl_mm = mediana_px * fator_px_mm          # calibração px→mm
-velocidade = (desl_mm / 1000.0 / delta_t) * 3.6 * escala  # km/h
-```
-
-**Modos de operação:**
-
-| Modo | Fonte de dados |
-|---|---|
-| `real` | Optical Flow calibrado (px→mm) |
-| `sensor` | Acelerômetro + GPS do smartphone |
-| `listras` | Detecção de faixas no piso (HSV) |
-| `demo` | Simulação automática |
-| `simulado` | Flow proporcional sem calibração |
-
-**Atalhos em tempo real:**
-
-| Tecla | Ação |
-|---|---|
-| `C` | Iniciar/finalizar calibração px→mm |
-| `S` | Alternar modo de odometria |
-| `L` | Alternar layout HUD (velocímetro / cyber) |
-| `I` | Ligar/desligar IA (Optical Flow) |
-| `R` | Resetar estatísticas |
-| `Q` | Encerrar |
-
----
-
-## Instalação e Uso
-
-**Pré-requisitos:** Python 3.10+, smartphone com [IP Webcam](https://play.google.com/store/apps/details?id=com.pas.webcam) ou [Sensor Logger](https://apps.apple.com/app/sensor-logger/id1531582925)
+**Requirements:** Python 3.10+ and a smartphone running [IP Webcam](https://play.google.com/store/apps/details?id=com.pas.webcam) (Android) on the same Wi-Fi network as the computer.
 
 ```bash
-# 1. Clone o repositório
-git clone https://github.com/eduardo-a-xavier/neurodrive-.git
-cd neurodrive-
+git clone https://github.com/eduardo-a-xavier/neurodrive.git
+cd neurodrive
 
-# 2. Instale as dependências
+python -m venv .venv
+# Windows: .venv\Scripts\activate    |    Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Configure o IP da câmera (opcional — pode configurar pelo dashboard)
+# Optional: preset the camera. You can also set it later in the dashboard.
 echo "CAMERA_IP=192.168.x.x:8080" > .env
 
-# 4. Inicie o servidor
 python web_server.py
 ```
 
-Acesse `http://localhost:5000` (ou o IP local exibido no terminal).
+Open `http://localhost:5000` (the terminal also prints the LAN address).
 
-**Para rodar as simulações individualmente:**
+### Configuration
+
+Set these in a `.env` file (ignored by Git) or as environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `CAMERA_IP` | — | `host:port` of the phone camera; the server reads `http://<CAMERA_IP>/video` |
+| `WEB_PORT` | `5000` | Port of the dashboard and API |
+| `SENSOR_SERVER_PORT` | `8000` | Port that receives Sensor Logger `POST /data` |
+
+### Run the physics simulations
+
+Each script saves a PNG next to itself.
+
 ```bash
-python motor_simulation_v2_faraday.py   # Gera faraday_motor_response.png
-python circuito_rlc.py                  # Gera rlc_resonancia.png
-python analise_frequencia.py            # Gera fft_analise_frequencia.png
-python pwm_analise.py                   # Gera pwm_analise.png
-python analise_bateria.py               # Gera analise_bateria.png
+python motor_simulation_v2_faraday.py   # faraday_motor_response.png
+python circuito_rlc.py                  # rlc_resonancia.png
+python analise_frequencia.py            # fft_analise_frequencia.png
+python pwm_analise.py                   # pwm_analise.png
+python analise_bateria.py               # analise_bateria.png
 ```
 
----
+## 🔌 API reference
 
-## Ementa Aplicada
+Base URL: `http://localhost:5000`
 
-| Conteúdo | Aplicação no Projeto |
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/` | Dashboard (PWA) |
+| `GET` | `/video` | MJPEG stream with HUD (`multipart/x-mixed-replace`) |
+| `GET` | `/api/telemetria` | Telemetry as Server-Sent Events, 10 Hz |
+| `GET` | `/api/galeria` | JSON list of images in `web/assets/gallery` |
+| `POST` | `/api/config_camera` | Change the camera source at runtime |
+| `POST` | `/api/tecla` | Send a HUD shortcut key remotely |
+
+### `GET /api/telemetria`
+
+```bash
+curl -N http://localhost:5000/api/telemetria
+```
+
+Each event is a JSON line prefixed by `data: `:
+
+```json
+{
+  "vel_inst": 0.0,
+  "vel_media": 0.0,
+  "vel_max": 0.0,
+  "acel": 0.0,
+  "modo": "real",
+  "qualidade": 0,
+  "sensor_ativo": false,
+  "gps_kmh": null,
+  "accel_x": null,
+  "accel_y": null,
+  "historico": []
+}
+```
+
+> Values above are placeholders showing the shape. Speeds are in km/h, acceleration in m/s². `gps_kmh`, `accel_x` and `accel_y` are `null` unless Sensor Logger sent data in the last 2 seconds.
+
+### `POST /api/config_camera`
+
+```bash
+curl -X POST http://localhost:5000/api/config_camera \
+  -H "Content-Type: application/json" \
+  -d '{"url": "192.168.1.20:8080"}'
+```
+
+```json
+{ "status": "ok", "url": "http://192.168.1.20:8080/video" }
+```
+
+A missing `http://` prefix and `/video` path are added automatically. Without a `url` field the API returns `400` with `{"error": "invalid"}`.
+
+### `POST /api/tecla`
+
+```bash
+curl -X POST http://localhost:5000/api/tecla \
+  -H "Content-Type: application/json" \
+  -d '{"tecla": "c"}'
+```
+
+Returns `{"status": "ok"}`. The key must be a single character.
+
+| Key | Action |
 |---|---|
-| Cálculo Diferencial / EDOs | `odeint` para BEMF e circuito RLC |
-| Álgebra Linear / Matrizes | Optical Flow — transformações frame a frame |
-| Eletromagnetismo / Faraday | Modelo BEMF do motor DC, correntes induzidas |
-| Fenômenos Oscilatórios | Circuito RLC, frequência natural f₀ = 225 Hz |
-| Números Complexos / Fourier | FFT com janela Hanning, cálculo de THD |
-| PWM / Eletrodinâmica | Controle de potência do motor por PWM |
+| `C` | Start / finish px→mm calibration |
+| `S` | Cycle odometry mode |
+| `L` | Toggle HUD layout (speedometer / cyber) |
+| `I` | Toggle the optical-flow engine |
+| `R` | Reset statistics |
+| `Q` | Quit (OpenCV window) |
 
----
+### Sensor Logger ingest
 
-<div align="center">
+Point Sensor Logger's HTTP push to `http://<computer-ip>:8000/data`. The accelerometer and `location` (GPS speed) payloads feed the `sensor` mode.
 
-**UniRitter · Engenharia de Software · 2026/1**  
-*Projeto desenvolvido para Avaliação A3 — Fenômenos Elétricos, Magnéticos e Oscilatórios*
+## 🧠 How the vision pipeline works
 
-</div>
+`neurodrive_pipeline.py` → class `OdometriaVisual`
+
+1. Downscale the frame by 50% to cut per-frame cost.
+2. Mask a trapezoidal region of interest that matches the track perspective.
+3. Track features with pyramidal Lucas-Kanade optical flow (`winSize=(15, 15)`, `maxLevel=2`).
+4. Take the **median** displacement (robust to outliers) and convert it with the px→mm calibration.
+5. Derive speed in km/h, applying the model scale factor (1:24), then acceleration and statistics.
+
+| Mode | Data source |
+|---|---|
+| `real` | Calibrated optical flow (px → mm) |
+| `sensor` | Smartphone accelerometer + GPS |
+| `listras` | Floor-stripe detection (HSV) |
+| `demo` | Automatic simulation |
+| `simulado` | Uncalibrated, flow-proportional |
+
+## ⚡ Physics simulations
+
+| Script | Phenomenon | Output |
+|---|---|---|
+| `motor_simulation_v2_faraday.py` | Faraday's law and back-EMF of the DC motor (`scipy.integrate.odeint`) | ![Faraday](web/assets/simulations/faraday_motor_response.png) |
+| `circuito_rlc.py` | Series RLC resonance and damping | ![RLC](web/assets/simulations/rlc_resonancia.png) |
+| `analise_frequencia.py` | FFT, Hanning window, THD, 3rd/5th harmonics | ![FFT](web/assets/simulations/fft_analise_frequencia.png) |
+| `pwm_analise.py` | PWM power control | ![PWM](web/assets/simulations/pwm_analise.png) |
+| `analise_bateria.py` | LiPo 3.7 V / 500 mAh discharge curve | ![Battery](web/assets/simulations/analise_bateria.png) |
+
+Motor model:
+
+```text
+V_in = I·R + L·dI/dt + ε        ε = K_e·ω   (back-EMF, Faraday)
+τ = K_t·I                       J·dω/dt = τ − b·ω
+```
+
+With the motor stalled (ω = 0) the peak current is `V/R = 3.0 V / 3 Ω = 1.0 A`; it drops as back-EMF grows.
+
+## 🛠 Tech stack
+
+| Area | Tools |
+|---|---|
+| Computer vision | OpenCV, NumPy |
+| Backend | Python, Flask, Server-Sent Events |
+| Scientific computing | SciPy, Matplotlib |
+| Frontend | Vanilla JS, PWA (manifest + service worker) |
+| Configuration | python-dotenv |
+
+## 📁 Project structure
+
+```text
+neurodrive/
+├── web_server.py                  # Flask app: stream, SSE, REST
+├── neurodrive_pipeline.py         # OdometriaVisual, AsyncIPCamera, sensor server
+├── motor_simulation_v2_faraday.py # Back-EMF simulation
+├── circuito_rlc.py                # RLC resonance
+├── analise_frequencia.py          # FFT / THD
+├── pwm_analise.py                 # PWM
+├── analise_bateria.py             # Battery discharge
+├── calibracao_neurodrive.json     # Persisted px→mm calibration
+├── requirements.txt
+└── web/                           # PWA dashboard and assets
+```
+
+## 🎓 Academic context
+
+Built for assessment A3 of *Electrical, Magnetic and Oscillatory Phenomena* (Software Engineering, UniRitter, 2026/1).
+
+| Topic | Where it shows up |
+|---|---|
+| Differential calculus / ODEs | `odeint` for back-EMF and the RLC circuit |
+| Linear algebra | Frame-to-frame optical-flow transforms |
+| Electromagnetism / Faraday | DC motor back-EMF model |
+| Oscillatory phenomena | RLC resonance |
+| Complex numbers / Fourier | FFT with Hanning window, THD |
+| PWM / electrodynamics | Motor power control |
+
+## 🤝 Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Issues and pull requests are welcome.
+
+## 📄 License
+
+[MIT](LICENSE) © 2026 eduardo-a-xavier
