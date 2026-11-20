@@ -16,11 +16,12 @@ CONTEXTO DO CARRINHO:
 - Motor tem indutância L ≈ 0.5 mH
 - Circuito tem resistência R = 3Ω (motor)
 - Capacitor de filtro típico: C ≈ 100 µF
-- Frequência natural esperada: ~225 Hz
+- Frequência natural esperada: ~712 Hz
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 from scipy.integrate import odeint
 
 # ============================================================================
@@ -58,12 +59,15 @@ class CircuitoRLC:
         
         # Fator de amortecimento (adimensional)
         self.zeta = R / (2 * np.sqrt(L / C))
+        self.criticamente_amortecido = bool(
+            np.isclose(self.zeta, 1.0, rtol=1e-6, atol=1e-9)
+        )
         
         # Fator de qualidade
         self.Q = self.omega_0 * L / R
         
         # Frequência amortecida (se sub-amortecido)
-        if self.zeta < 1:
+        if self.zeta < 1 and not self.criticamente_amortecido:
             self.omega_d = self.omega_0 * np.sqrt(1 - self.zeta**2)
             self.f_d = self.omega_d / (2 * np.pi)
         else:
@@ -72,12 +76,11 @@ class CircuitoRLC:
     
     def tipo_resposta(self):
         """Classifica a resposta baseado em ζ"""
+        if self.criticamente_amortecido:
+            return "Criticamente amortecida"
         if self.zeta < 1:
             return "Sub-amortecida (oscilatória)"
-        elif self.zeta == 1:
-            return "Criticamente amortecida"
-        else:
-            return "Sobre-amortecida (não-oscilatória)"
+        return "Sobre-amortecida (não-oscilatória)"
     
     def equacoes_diferenciais_transiente(self, y, t, V_entrada):
         """
@@ -169,10 +172,12 @@ def comparar_amortecimentos():
         ("Sub-amortecido", 0.3),
         ("Criticamente amortecido", 1.0),
         ("Sobre-amortecido", 2.0),
-        ("Caso real (carrinho)", 3.0)
+        ("Caso real (carrinho)", None),
     ]
-    
-    for nome, R in casos:
+
+    L, C = 0.0005, 100e-6
+    for nome, zeta in casos:
+        R = 3.0 if zeta is None else 2 * zeta * np.sqrt(L / C)
         circ = CircuitoRLC(R=R, L=0.0005, C=100e-6)
         print(f"\n{nome}:")
         print(f"  ζ = {circ.zeta:.3f}, f₀ = {circ.f_0:.1f} Hz, Q = {circ.Q:.2f}")
@@ -236,8 +241,9 @@ def plotar_analise_rlc():
     axes[1, 1].grid(True, which='both', alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('./rlc_resonancia.png', dpi=300, bbox_inches='tight')
-    print("✓ Gráfico salvo: rlc_resonancia.png")
+    destino = Path(__file__).resolve().parent / "web/assets/simulations/rlc_resonancia.png"
+    plt.savefig(destino, dpi=300, bbox_inches='tight')
+    print(f"✓ Gráfico salvo: {destino}")
     plt.close()
 
 

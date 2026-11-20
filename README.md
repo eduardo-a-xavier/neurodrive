@@ -111,7 +111,7 @@ Circuito RLC série com parâmetros medidos do carrinho:
 | R (motor) | 3 Ω |
 | L (indutância bobina) | 0,5 mH |
 | C (capacitor filtro) | 100 µF |
-| **f₀ = 1/(2π√LC)** | **~225 Hz** |
+| **f₀ = 1/(2π√LC)** | **~712 Hz** |
 | ζ = R/(2√(L/C)) | Sub-amortecido (oscilatório) |
 
 ![RLC](web/assets/simulations/rlc_resonancia.png)
@@ -202,8 +202,8 @@ velocidade = (desl_mm / 1000.0 / delta_t) * 3.6 * escala  # km/h
 
 ```bash
 # 1. Clone o repositório
-git clone https://github.com/eduardo-a-xavier/neurodrive-.git
-cd neurodrive-
+git clone https://github.com/eduardo-a-xavier/neurodrive.git
+cd neurodrive
 
 # 2. Instale as dependências
 pip install -r requirements.txt
@@ -219,12 +219,24 @@ Acesse `http://localhost:5000` (ou o IP local exibido no terminal).
 
 **Para rodar as simulações individualmente:**
 ```bash
-python motor_simulation_v2_faraday.py   # Gera faraday_motor_response.png
-python circuito_rlc.py                  # Gera rlc_resonancia.png
-python analise_frequencia.py            # Gera fft_analise_frequencia.png
-python pwm_analise.py                   # Gera pwm_analise.png
-python analise_bateria.py               # Gera analise_bateria.png
+python motor_simulation_v2_faraday.py
+python circuito_rlc.py
+python analise_frequencia.py
+python pwm_analise.py
+python analise_bateria.py
 ```
+
+Os gráficos são atualizados em `web/assets/simulations/`.
+
+**Para desenvolvimento e testes:**
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+O servidor foi projetado para uma rede local confiável. A câmera configurada
+pelo dashboard deve usar um endereço IPv4 privado da LAN.
 
 ---
 
@@ -235,7 +247,7 @@ python analise_bateria.py               # Gera analise_bateria.png
 | Cálculo Diferencial / EDOs | `odeint` para BEMF e circuito RLC |
 | Álgebra Linear / Matrizes | Optical Flow — transformações frame a frame |
 | Eletromagnetismo / Faraday | Modelo BEMF do motor DC, correntes induzidas |
-| Fenômenos Oscilatórios | Circuito RLC, frequência natural f₀ = 225 Hz |
+| Fenômenos Oscilatórios | Circuito RLC, frequência natural f₀ ≈ 712 Hz |
 | Números Complexos / Fourier | FFT com janela Hanning, cálculo de THD |
 | PWM / Eletrodinâmica | Controle de potência do motor por PWM |
 

@@ -24,6 +24,7 @@ dI/dt = (V_chaveada - I×R - K_e×ω) / L  [Lei de Faraday + PWM]
 
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 from scipy.integrate import odeint
 
 # ============================================================================
@@ -104,25 +105,17 @@ class ControladorPWM:
     
     def ripple_corrente(self, duty_cycle, omega=0):
         """
-        Estima ripple de corrente (variação cíclica).
-        
-        ΔI ≈ (V_max - I_med×R) × T_on / L
-        onde T_on = (D × T_PWM)
+        Estima a amplitude pico-a-pico do ripple no modelo PWM ideal.
+
+        O argumento ``omega`` é mantido para compatibilidade com chamadas
+        existentes; no regime ideal, a força contra-eletromotriz cancela ao
+        calcular a variação em torno da corrente média.
         """
-        V_avg = self.tensao_media_pwm(duty_cycle)
-        I_avg = V_avg / self.R
-        
-        # Voltagem efetiva para di/dt
-        V_efetiva = self.V_max - I_avg * self.R - self.K_e * omega
-        
-        T_on = (duty_cycle / 100.0) * self.T_pwm
-        
-        if self.L > 0:
-            delta_I = V_efetiva * T_on / self.L
-        else:
-            delta_I = 0
-        
-        return delta_I
+        if self.L <= 0:
+            return 0
+
+        duty = duty_cycle / 100.0
+        return self.V_max * duty * (1 - duty) * self.T_pwm / self.L
     
     def simular_resposta_pwm(self, duty_cycle, tempo_total=0.05):
         """
@@ -238,8 +231,9 @@ def plotar_pwm_analise():
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('./pwm_analise.png', dpi=300, bbox_inches='tight')
-    print("✓ Gráfico salvo: pwm_analise.png")
+    destino = Path(__file__).resolve().parent / "web/assets/simulations/pwm_analise.png"
+    plt.savefig(destino, dpi=300, bbox_inches='tight')
+    print(f"✓ Gráfico salvo: {destino}")
     plt.close()
     
     # Imprimir análises para cada duty cycle

@@ -29,8 +29,8 @@ O valor 1.0A medido corresponde à corrente de partida/carga máxima.
 
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 from scipy.integrate import odeint
-from scipy.optimize import fsolve
 
 # ============================================================================
 # PARÂMETROS DO MOTOR DC (RENLONG PEQUENO)
@@ -261,8 +261,9 @@ def plotar_resposta_motor():
     axes[1, 1].legend()
 
     plt.tight_layout()
-    plt.savefig('./faraday_motor_response.png', dpi=300, bbox_inches='tight')
-    print("Sucesso! Grafico salvo: faraday_motor_response.png")
+    destino = Path(__file__).resolve().parent / "web/assets/simulations/faraday_motor_response.png"
+    plt.savefig(destino, dpi=300, bbox_inches='tight')
+    print(f"Sucesso! Gráfico salvo: {destino}")
     plt.close()
 
 

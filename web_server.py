@@ -3,12 +3,20 @@ import threading
 import time
 import os
 import json
+import ipaddress
+from urllib.parse import urlsplit, urlunsplit
 from flask import Flask, Response, send_from_directory, stream_with_context, jsonify, request
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from neurodrive_pipeline import OdometriaVisual, telemetria_ext, ESCALA_MAQUETE, AsyncIPCamera
+from neurodrive_pipeline import (
+    AsyncIPCamera,
+    ESCALA_MAQUETE,
+    OdometriaVisual,
+    criar_servidor_sensores,
+    snapshot_telemetria,
+)
 
 CAMERA_IP = os.getenv("CAMERA_IP")
 WEB_PORT  = int(os.getenv("WEB_PORT", "5000"))
@@ -21,11 +29,60 @@ odometria   = OdometriaVisual(escala=ESCALA_MAQUETE)
 
 nova_fonte = None
 async_cam = None
+fonte_lock = threading.Lock()
+encerrar_event = threading.Event()
+camera_thread = None
+sensor_server = None
+sensor_thread = None
+
+REDES_CAMERA = tuple(
+    ipaddress.ip_network(rede)
+    for rede in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+
+
+def normalizar_url_camera(valor):
+    if not isinstance(valor, str) or not valor.strip():
+        raise ValueError("URL da câmera vazia")
+
+    url = valor.strip()
+    if "://" not in url:
+        url = f"http://{url}"
+
+    partes = urlsplit(url)
+    if partes.scheme not in {"http", "https"}:
+        raise ValueError("a câmera deve usar HTTP ou HTTPS")
+    if partes.username or partes.password or partes.fragment:
+        raise ValueError("credenciais e fragmentos não são aceitos na URL")
+
+    try:
+        host = ipaddress.ip_address(partes.hostname or "")
+        porta = partes.port
+    except ValueError as erro:
+        raise ValueError("host ou porta inválidos") from erro
+
+    if host.version != 4 or not any(host in rede for rede in REDES_CAMERA):
+        raise ValueError("a câmera deve usar um endereço IPv4 privado da LAN")
+
+    caminho = partes.path
+    if caminho.endswith("/data"):
+        caminho = f"{caminho[:-5]}/video"
+    elif caminho in {"", "/"}:
+        caminho = "/video"
+
+    destino = str(host)
+    if porta is not None:
+        destino = f"{destino}:{porta}"
+    return urlunsplit((partes.scheme, destino, caminho, partes.query, ""))
 
 def camera_loop():
     global frame_atual, nova_fonte, async_cam
-    
-    video_source = f"http://{CAMERA_IP}/video" if CAMERA_IP else None
+
+    try:
+        video_source = normalizar_url_camera(CAMERA_IP) if CAMERA_IP else None
+    except ValueError as erro:
+        print(f"[CAM] Configuração ignorada: {erro}")
+        video_source = None
     print(f"[CAM] Conectando em: {video_source}")
     
     if video_source is None:
@@ -36,10 +93,13 @@ def camera_loop():
         async_cam = cv2.VideoCapture(video_source)
         async_cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-    while True:
-        if nova_fonte is not None:
-            video_source = nova_fonte
+    while not encerrar_event.is_set():
+        with fonte_lock:
+            fonte_pendente = nova_fonte
             nova_fonte = None
+
+        if fonte_pendente is not None:
+            video_source = fonte_pendente
             if async_cam is not None:
                 if isinstance(async_cam, AsyncIPCamera):
                     async_cam.stop()
@@ -58,7 +118,7 @@ def camera_loop():
             import numpy as np
             frame = np.zeros((720, 1280, 3), dtype=np.uint8)
             cv2.putText(frame, "COLOQUE O IP DA CAMERA NO DASHBOARD", (250, 360), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 2)
-            time.sleep(0.5)
+            encerrar_event.wait(0.5)
         elif isinstance(async_cam, AsyncIPCamera):
             # Zero Delay: Pega apenas o frame recém decodificado na memória
             frame = async_cam.get_frame()
@@ -67,8 +127,10 @@ def camera_loop():
         else:
             ret, frame = async_cam.read()
             if not ret:
-                time.sleep(0.5)
-                if nova_fonte is None:
+                encerrar_event.wait(0.5)
+                with fonte_lock:
+                    sem_nova_fonte = nova_fonte is None
+                if sem_nova_fonte:
                     async_cam.open(video_source)
                 continue
             frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
@@ -81,11 +143,50 @@ def camera_loop():
         with frame_lock:
             frame_atual = processado
 
-threading.Thread(target=camera_loop, daemon=True).start()
+
+def iniciar_servicos():
+    global camera_thread, sensor_server, sensor_thread
+    if camera_thread is not None and camera_thread.is_alive():
+        return
+
+    encerrar_event.clear()
+    sensor_server = criar_servidor_sensores()
+    sensor_thread = threading.Thread(
+        target=sensor_server.serve_forever,
+        name="sensor-logger",
+        daemon=True,
+    )
+    camera_thread = threading.Thread(
+        target=camera_loop,
+        name="camera-loop",
+        daemon=True,
+    )
+    sensor_thread.start()
+    camera_thread.start()
+
+
+def encerrar_servicos():
+    global camera_thread, sensor_server, sensor_thread, async_cam
+    encerrar_event.set()
+    if async_cam is not None:
+        if isinstance(async_cam, AsyncIPCamera):
+            async_cam.stop()
+        else:
+            async_cam.release()
+        async_cam = None
+    if sensor_server is not None:
+        sensor_server.shutdown()
+        sensor_server.server_close()
+    for thread in (camera_thread, sensor_thread):
+        if thread is not None:
+            thread.join(timeout=1.0)
+    camera_thread = None
+    sensor_thread = None
+    sensor_server = None
 
 def gerar_mjpeg():
     # Loop agressivo para streaming MJPEG
-    while True:
+    while not encerrar_event.is_set():
         with frame_lock:
             f = frame_atual
             
@@ -115,7 +216,8 @@ def telemetria_sse():
     def gerar():
         try:
             while True:
-                sensor_ativo = (time.time() - telemetria_ext["ultima_att"]) < 2.0
+                telemetria = snapshot_telemetria()
+                sensor_ativo = (time.time() - telemetria["ultima_att"]) < 2.0
                 dados = {
                     "vel_inst":     round(odometria.velocidade_instantanea_kmh, 1),
                     "vel_media":    round(odometria.velocidade_media_kmh, 1),
@@ -124,9 +226,9 @@ def telemetria_sse():
                     "modo":         odometria.modo,
                     "qualidade":    odometria.qualidade_rastreio,
                     "sensor_ativo": sensor_ativo,
-                    "gps_kmh":      round(telemetria_ext["gps_speed_ms"] * 3.6, 1) if sensor_ativo else None,
-                    "accel_x":      round(telemetria_ext["aceleracao_x"], 2) if sensor_ativo else None,
-                    "accel_y":      round(telemetria_ext["aceleracao_y"], 2) if sensor_ativo else None,
+                    "gps_kmh":      round(telemetria["gps_speed_ms"] * 3.6, 1) if sensor_ativo else None,
+                    "accel_x":      round(telemetria["aceleracao_x"], 2) if sensor_ativo else None,
+                    "accel_y":      round(telemetria["aceleracao_y"], 2) if sensor_ativo else None,
                     "historico":    list(odometria.historico_grafico[-60:]),
                 }
                 yield f"data: {json.dumps(dados)}\n\n"
@@ -154,19 +256,14 @@ def listar_galeria():
 @app.route("/api/config_camera", methods=["POST"])
 def config_camera():
     global nova_fonte
-    dados = request.get_json()
+    dados = request.get_json(silent=True)
     if dados and "url" in dados:
-        url = dados["url"].strip()
-        if url.endswith("/data"):
-            url = url.replace("/data", "/video")
-            
-        if not url.startswith("http"):
-            url = f"http://{url}"
-            
-        if url.count("/") == 2:
-            url = f"{url}/video"
-            
-        nova_fonte = url
+        try:
+            url = normalizar_url_camera(dados["url"])
+        except ValueError as erro:
+            return jsonify({"error": str(erro)}), 400
+        with fonte_lock:
+            nova_fonte = url
         return jsonify({"status": "ok", "url": url})
     return jsonify({"error": "invalid"}), 400
 
@@ -212,5 +309,8 @@ if __name__ == "__main__":
     print(f"\n  Sensor Logger -> http://{local_ip}:{sensor_port}/data")
     print(f"{'='*50}\n")
     
-    # Roda o Flask sem cache, super rápido
-    app.run(host="0.0.0.0", port=WEB_PORT, threaded=True)
+    try:
+        iniciar_servicos()
+        app.run(host="0.0.0.0", port=WEB_PORT, threaded=True)
+    finally:
+        encerrar_servicos()

@@ -40,7 +40,7 @@ venv\Scripts\activate
 
 ### 4. Instale as Dependências
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
 ### 5. Crie uma Branch para Sua Feature ou Fix

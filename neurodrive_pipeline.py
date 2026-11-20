@@ -6,6 +6,7 @@ import os
 import json
 import threading
 import urllib.request
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
 
@@ -20,28 +21,84 @@ telemetria_ext = {
     "gps_speed_ms": 0.0,
     "ultima_att": 0.0
 }
+telemetria_lock = threading.Lock()
+MAX_SENSOR_BODY = 64 * 1024
+
+
+def snapshot_telemetria():
+    with telemetria_lock:
+        return dict(telemetria_ext)
+
+
+def _numero_sensor(valor):
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        raise ValueError("valor de sensor deve ser numérico")
+    numero = float(valor)
+    if not math.isfinite(numero):
+        raise ValueError("valor de sensor deve ser finito")
+    return numero
+
+
+def _extrair_atualizacoes_sensor(data):
+    payload = data.get("payload") if isinstance(data, dict) else None
+    if not isinstance(payload, list):
+        raise ValueError("payload deve ser uma lista")
+
+    atualizacoes = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("item de payload inválido")
+        nome = item.get("name")
+        valores = item.get("values")
+        if nome not in {"accelerometer", "gravity", "location"}:
+            continue
+        if not isinstance(valores, dict):
+            raise ValueError("values deve ser um objeto")
+
+        if nome in {"accelerometer", "gravity"}:
+            for eixo in ("x", "y", "z"):
+                if eixo in valores:
+                    atualizacoes[f"aceleracao_{eixo}"] = _numero_sensor(
+                        valores[eixo]
+                    )
+        elif "speed" in valores:
+            atualizacoes["gps_speed_ms"] = _numero_sensor(valores["speed"])
+
+    if atualizacoes:
+        atualizacoes["ultima_att"] = time.time()
+    return atualizacoes
 
 class SensorLoggerHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        if content_length > 0:
-            post_data = self.rfile.read(content_length)
-            try:
-                data = json.loads(post_data.decode('utf-8'))
-                payload = data.get("payload", [])
-                for p in payload:
-                    name = p.get("name")
-                    vals = p.get("values", {})
-                    if name == "accelerometer" or name == "gravity":
-                        telemetria_ext["aceleracao_x"] = vals.get("x", 0.0)
-                        telemetria_ext["aceleracao_y"] = vals.get("y", 0.0)
-                        telemetria_ext["aceleracao_z"] = vals.get("z", 0.0)
-                        telemetria_ext["ultima_att"] = time.time()
-                    elif name == "location":
-                        telemetria_ext["gps_speed_ms"] = vals.get("speed", 0.0)
-                        telemetria_ext["ultima_att"] = time.time()
-            except Exception:
-                pass
+        if self.path != "/data":
+            self.send_error(404)
+            return
+
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_error(400, "Content-Length inválido")
+            return
+
+        if content_length <= 0:
+            self.send_error(400, "corpo vazio")
+            return
+        if content_length > MAX_SENSOR_BODY:
+            self.send_error(413, "corpo excede 64 KiB")
+            return
+
+        try:
+            corpo = self.rfile.read(content_length)
+            data = json.loads(corpo.decode("utf-8"))
+            atualizacoes = _extrair_atualizacoes_sensor(data)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as erro:
+            self.send_error(400, str(erro))
+            return
+
+        if atualizacoes:
+            with telemetria_lock:
+                telemetria_ext.update(atualizacoes)
+
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
@@ -49,41 +106,8 @@ class SensorLoggerHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass # Silencia logs para nao poluir o terminal
 
-def iniciar_servidor_sensores():
-    server = HTTPServer(('0.0.0.0', SENSOR_SERVER_PORT), SensorLoggerHandler)
-    server.serve_forever()
-
-threading.Thread(target=iniciar_servidor_sensores, daemon=True).start()
-
-def iniciar_cliente_sensores_teste():
-    import urllib.request
-    import json
-    import time
-    url = "http://192.168.15.8:8000/data"
-    while True:
-        try:
-            req = urllib.request.Request(url)
-            with urllib.request.urlopen(req, timeout=0.5) as response:
-                data = json.loads(response.read().decode('utf-8'))
-                if isinstance(data, dict):
-                    # Parse SensorServer genérico
-                    if "accelerometer" in data:
-                        acc = data["accelerometer"]
-                        if isinstance(acc, list) and len(acc) >= 3:
-                            telemetria_ext["aceleracao_x"] = float(acc[0])
-                            telemetria_ext["aceleracao_y"] = float(acc[1])
-                            telemetria_ext["aceleracao_z"] = float(acc[2])
-                    if "location" in data:
-                        loc = data["location"]
-                        if isinstance(loc, list) and len(loc) > 2:
-                            # Tentativa de ler velocidade: costuma ser o último valor do array de location
-                            telemetria_ext["gps_speed_ms"] = float(loc[-1])
-                telemetria_ext["ultima_att"] = time.time()
-        except Exception:
-            pass
-        time.sleep(0.1)
-
-threading.Thread(target=iniciar_cliente_sensores_teste, daemon=True).start()
+def criar_servidor_sensores(host="0.0.0.0", port=SENSOR_SERVER_PORT):
+    return HTTPServer((host, port), SensorLoggerHandler)
 
 # ==============================================================================
 #  CLASSE ASYNC IP CAMERA (Processamento Assíncrono para Mitigação de Latência)
@@ -100,15 +124,12 @@ class AsyncIPCamera:
 
     def _capture_loop(self):
         import urllib.request
-        import socket
         
         # Solicitação de frames discretos (snapshot) em vez de stream contínuo.
         # Esta abordagem previne o enfileiramento de pacotes (buffer TCP),
         # garantindo que o algoritmo de visão processe apenas o estado atual (latência mitigada).
         is_ipwebcam = self.url.endswith("/video")
         shot_url = self.url.replace("/video", "/shot.jpg") if is_ipwebcam else self.url
-        
-        socket.setdefaulttimeout(1.0)
         
         while self.running:
             try:
@@ -145,12 +166,14 @@ class AsyncIPCamera:
 
     def stop(self):
         self.running = False
+        if self.thread is not threading.current_thread():
+            self.thread.join(timeout=1.0)
 
 # ==============================================================================
 #  CLASSE ODOMETRIA VISUAL (Análise Cinemática e Vetorial)
 # ==============================================================================
 
-ARQUIVO_CALIBRACAO   = "calibracao_neurodrive.json"
+ARQUIVO_CALIBRACAO   = Path(__file__).resolve().parent / "calibracao_neurodrive.json"
 VEL_MAX_CARRINHO_KMH = 30.0   # Velocidade máxima real do carrinho (spec fabricante)
 ESCALA_MAQUETE       = 24.0   # Escala 1:24 (escala real medida)
 
@@ -174,6 +197,7 @@ class OdometriaVisual:
         self.qtd_medicoes_curso    = 0
 
         self.escala = escala
+        self._calibracao_lock = threading.Lock()
 
         # Calibração — carrega do disco se existir
         self.fator_px_mm                = None
@@ -216,18 +240,22 @@ class OdometriaVisual:
 
     def _salvar_calibracao(self):
         try:
-            d = {}
-            if os.path.exists(ARQUIVO_CALIBRACAO):
-                with open(ARQUIVO_CALIBRACAO) as f:
-                    d = json.load(f)
-            if self.fator_px_mm is not None:
-                d["fator_px_mm"] = self.fator_px_mm
-            if self.flow_maximo_observado_pxs is not None:
-                d["flow_maximo_pxs"] = self.flow_maximo_observado_pxs
-            with open(ARQUIVO_CALIBRACAO, "w") as f:
-                json.dump(d, f, indent=2)
-        except Exception as e:
-            pass
+            with self._calibracao_lock:
+                d = {}
+                if ARQUIVO_CALIBRACAO.exists():
+                    with ARQUIVO_CALIBRACAO.open(encoding="utf-8") as arquivo:
+                        d = json.load(arquivo)
+                if self.fator_px_mm is not None:
+                    d["fator_px_mm"] = self.fator_px_mm
+                if self.flow_maximo_observado_pxs is not None:
+                    d["flow_maximo_pxs"] = self.flow_maximo_observado_pxs
+
+                temporario = ARQUIVO_CALIBRACAO.with_suffix(".json.tmp")
+                with temporario.open("w", encoding="utf-8") as arquivo:
+                    json.dump(d, arquivo, indent=2)
+                os.replace(temporario, ARQUIVO_CALIBRACAO)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as erro:
+            print(f"[CALIB] Erro ao salvar: {erro}")
 
     def processar_tecla(self, tecla):
         if tecla in (ord('c'), ord('C')):
@@ -380,8 +408,114 @@ class OdometriaVisual:
             intens = min(255, int((dados[i] / max_v) * 255))
             cv2.line(frame, pts[i-1], pts[i], (255, 255 - intens, intens), 2)
 
+    def _desenhar_velocimetro(self, frame, altura):
+        cx, cy = 180, altura - 150
+        raio_ext, raio_int = 110, 70
+        velocidade_maxima = 80
+        velocidade_real = self.velocidade_instantanea_kmh
+        velocidade_absoluta = abs(velocidade_real)
+        velocidade_limitada = min(velocidade_absoluta, velocidade_maxima)
+
+        roi = frame[
+            cy-raio_ext-10:cy+raio_ext+10,
+            cx-raio_ext-10:cx+raio_ext+10,
+        ]
+        mascara = np.zeros((roi.shape[0], roi.shape[1]), dtype=np.uint8)
+        cv2.circle(mascara, (raio_ext + 10, raio_ext + 10), raio_ext + 10, 255, -1)
+        for canal in range(3):
+            roi[:, :, canal] = np.where(
+                mascara == 255,
+                roi[:, :, canal] // 2,
+                roi[:, :, canal],
+            )
+
+        cv2.circle(frame, (cx, cy), raio_ext, (255, 255, 255), 2)
+        angulo_inicio, angulo_fim = 150, 390
+        faixa_angular = angulo_fim - angulo_inicio
+
+        for valor in range(0, velocidade_maxima + 1, 5):
+            proporcao = valor / velocidade_maxima
+            angulo = math.radians(angulo_inicio + proporcao * faixa_angular)
+            cor = (255, 0, 255) if valor >= velocidade_maxima * 0.8 else (255, 255, 255)
+            raio_tick = raio_int if valor % 20 == 0 else raio_int + 15
+            espessura = 3 if valor % 20 == 0 else 1
+            x1 = int(cx + raio_ext * math.cos(angulo))
+            y1 = int(cy + raio_ext * math.sin(angulo))
+            x2 = int(cx + raio_tick * math.cos(angulo))
+            y2 = int(cy + raio_tick * math.sin(angulo))
+            cv2.line(frame, (x1, y1), (x2, y2), cor, espessura)
+
+            if valor % 20 == 0:
+                xt = int(cx + (raio_int - 20) * math.cos(angulo))
+                yt = int(cy + (raio_int - 20) * math.sin(angulo))
+                (tw, th), _ = cv2.getTextSize(str(valor), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+                cv2.putText(frame, str(valor), (xt - tw//2, yt + th//2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, cor, 1)
+
+        proporcao = velocidade_limitada / velocidade_maxima
+        angulo_velocidade = angulo_inicio + proporcao * faixa_angular
+        cor = (255, 255, 0) if proporcao < 0.8 else (255, 0, 255)
+        if velocidade_real < -0.5:
+            cor = (0, 165, 255)
+
+        cv2.ellipse(frame, (cx, cy), (raio_ext - 3, raio_ext - 3), 0, angulo_inicio, angulo_velocidade, cor, 6)
+        texto = f"{int(velocidade_absoluta):02d}"
+        (tw, th), _ = cv2.getTextSize(texto, cv2.FONT_HERSHEY_DUPLEX, 2.5, 4)
+        cv2.putText(frame, texto, (cx - tw//2, cy + th//2 - 10), cv2.FONT_HERSHEY_DUPLEX, 2.5, (255, 255, 255), 4)
+        cv2.putText(frame, "R" if velocidade_real < -0.5 else "D", (cx - 10, cy + 30), cv2.FONT_HERSHEY_DUPLEX, 0.8, cor, 2)
+        cv2.putText(frame, "km/h", (cx - 20, cy + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+        angulo_rad = math.radians(angulo_velocidade)
+        px = int(cx + (raio_int - 20) * math.cos(angulo_rad))
+        py = int(cy + (raio_int - 20) * math.sin(angulo_rad))
+        cv2.line(frame, (cx, cy), (px, py), cor, 3)
+        cv2.circle(frame, (cx, cy), 6, (255, 255, 255), -1)
+
+    def _desenhar_cyber(self, frame, altura, largura, telemetria):
+        cx, cy = largura // 2, altura // 2
+        cv2.circle(frame, (cx, cy), 40, (0, 255, 0), 1)
+        cv2.line(frame, (cx - 60, cy), (cx - 20, cy), (0, 255, 0), 2)
+        cv2.line(frame, (cx + 20, cy), (cx + 60, cy), (0, 255, 0), 2)
+        cv2.line(frame, (cx, cy - 60), (cx, cy - 20), (0, 255, 0), 2)
+        cv2.line(frame, (cx, cy + 20), (cx, cy + 60), (0, 255, 0), 2)
+        cv2.circle(frame, (cx, cy), 2, (0, 0, 255), -1)
+        cv2.rectangle(frame, (cx - 150, cy - 100), (cx - 120, cy - 70), (0, 255, 255), 2)
+        cv2.rectangle(frame, (cx + 120, cy + 70), (cx + 150, cy + 100), (0, 255, 255), 2)
+
+        g_cx, g_cy, raio = 180, altura - 150, 90
+        cv2.circle(frame, (g_cx, g_cy), raio, (255, 255, 255), 1)
+        cv2.circle(frame, (g_cx, g_cy), raio // 2, (100, 100, 100), 1)
+        cv2.line(frame, (g_cx - raio, g_cy), (g_cx + raio, g_cy), (100, 100, 100), 1)
+        cv2.line(frame, (g_cx, g_cy - raio), (g_cx, g_cy + raio), (100, 100, 100), 1)
+
+        aceleracao_longitudinal = self.aceleracao_ms2 / 9.8
+        if self.modo == "sensor":
+            aceleracao_lateral = telemetria.get("aceleracao_x", 0.0) / 9.8
+        else:
+            aceleracao_lateral = math.sin(time.time() * 2) * 0.2
+        px = int(g_cx + (max(-1.5, min(1.5, aceleracao_lateral)) / 1.5) * raio)
+        py = int(g_cy - (max(-1.5, min(1.5, aceleracao_longitudinal)) / 1.5) * raio)
+        cv2.circle(frame, (px, py), 8, (0, 255, 255), -1)
+        cv2.putText(frame, "G-METER", (g_cx - 30, g_cy + raio + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        cv2.putText(frame, f"G: {abs(aceleracao_longitudinal):.2f}", (g_cx - 20, g_cy - raio - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+    def _desenhar_telemetria(self, frame, dx, dy, telemetria):
+        cv2.putText(frame, "TELEMETRIA", (dx + 15, dy + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        cv2.putText(frame, f"MEDIA:  {self.velocidade_media_kmh:.1f} km/h", (dx + 15, dy + 65), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        cv2.putText(frame, f"MAXIMA: {self.velocidade_maxima:.1f} km/h", (dx + 15, dy + 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 1)
+        cor = (255, 255, 0) if self.aceleracao_ms2 >= 0 else (255, 0, 255)
+        cv2.putText(frame, f"ACEL:   {self.aceleracao_ms2:+.2f} m/s2", (dx + 15, dy + 135), cv2.FONT_HERSHEY_SIMPLEX, 0.6, cor, 2)
+
+        if time.time() - telemetria["ultima_att"] < 2.0:
+            gps_kmh = telemetria["gps_speed_ms"] * 3.6
+            aceleracao_y = telemetria["aceleracao_y"]
+            cv2.line(frame, (dx + 10, dy + 150), (dx + 260, dy + 150), (100, 100, 100), 1)
+            cv2.putText(frame, "SENSOR CELULAR", (dx + 15, dy + 170), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            cv2.putText(frame, f"GPS:   {gps_kmh:.1f} km/h", (dx + 15, dy + 195), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            cv2.putText(frame, f"ACCEL: {aceleracao_y:+.2f} m/s2", (dx + 15, dy + 215), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
     def desenhar_painel(self, frame):
         H, W = frame.shape[:2]
+        telemetria = snapshot_telemetria()
         
         # ---------------------------------------------------------
         # BARRA SUPERIOR OTIMIZADA POR ROI
@@ -430,123 +564,12 @@ class OdometriaVisual:
         cv2.putText(frame, f"SENS: {txt_s} ({self.qualidade_rastreio})",
                     (W - 250, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, cor_s, 2)
 
-        # ---------------------------------------------------------
-        # VELOCIMETRO OU HUD CYBER
-        # ---------------------------------------------------------
         if self.layout == "velocimetro":
-            cx, cy = 180, H - 150
-            raio_ext = 110
-            raio_int = 70
-            mv = 80 
-            
-            vd_real = self.velocidade_instantanea_kmh
-            vd_abs = abs(vd_real)
-            vd = min(vd_abs, mv)
-            
-            roi_vel = frame[cy-raio_ext-10 : cy+raio_ext+10, cx-raio_ext-10 : cx+raio_ext+10]
-            blk_vel = np.zeros_like(roi_vel)
-            
-            mascara_circ = np.zeros((roi_vel.shape[0], roi_vel.shape[1]), dtype=np.uint8)
-            cv2.circle(mascara_circ, (raio_ext+10, raio_ext+10), raio_ext+10, 255, -1)
-            for ch in range(3):
-                roi_vel[:,:,ch] = np.where(mascara_circ == 255, roi_vel[:,:,ch]//2, roi_vel[:,:,ch])
-            
-            cv2.circle(frame, (cx, cy), raio_ext, (255, 255, 255), 2)
-    
-            ang_inicio, ang_fim = 150, 390
-            faixa_ang = ang_fim - ang_inicio
-            
-            for v in range(0, mv + 1, 5):
-                prop = v / mv
-                ang_rad = math.radians(ang_inicio + (prop * faixa_ang))
-                cor_tick = (255, 0, 255) if v >= mv * 0.8 else (255, 255, 255)
-                
-                if v % 20 == 0:
-                    x1 = int(cx + (raio_ext) * math.cos(ang_rad))
-                    y1 = int(cy + (raio_ext) * math.sin(ang_rad))
-                    x2 = int(cx + (raio_int) * math.cos(ang_rad))
-                    y2 = int(cy + (raio_int) * math.sin(ang_rad))
-                    cv2.line(frame, (x1, y1), (x2, y2), cor_tick, 3)
-                    
-                    xt = int(cx + (raio_int - 20) * math.cos(ang_rad))
-                    yt = int(cy + (raio_int - 20) * math.sin(ang_rad))
-                    (tw, th), _ = cv2.getTextSize(str(v), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
-                    cv2.putText(frame, str(v), (xt - tw//2, yt + th//2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, cor_tick, 1)
-                else:
-                    x1 = int(cx + (raio_ext) * math.cos(ang_rad))
-                    y1 = int(cy + (raio_ext) * math.sin(ang_rad))
-                    x2 = int(cx + (raio_int + 15) * math.cos(ang_rad))
-                    y2 = int(cy + (raio_int + 15) * math.sin(ang_rad))
-                    cv2.line(frame, (x1, y1), (x2, y2), cor_tick, 1)
-    
-            prop_vd = vd / mv
-            ang_vd = ang_inicio + (prop_vd * faixa_ang)
-            cor_v  = (255, 255, 0) if prop_vd < 0.8 else (255, 0, 255)
-            if vd_real < -0.5:
-                cor_v = (0, 165, 255)
-            
-            cv2.ellipse(frame, (cx, cy), (raio_ext - 3, raio_ext - 3), 0, ang_inicio, ang_vd, cor_v, 6)
-            
-            texto_vd = f"{int(vd_abs):02d}"
-            (tw, th), _ = cv2.getTextSize(texto_vd, cv2.FONT_HERSHEY_DUPLEX, 2.5, 4)
-            cv2.putText(frame, texto_vd, (cx - tw//2, cy + th//2 - 10), cv2.FONT_HERSHEY_DUPLEX, 2.5, (255, 255, 255), 4)
-            
-            marcha = "R" if vd_real < -0.5 else "D"
-            cv2.putText(frame, marcha, (cx - 10, cy + 30), cv2.FONT_HERSHEY_DUPLEX, 0.8, cor_v, 2)
-            cv2.putText(frame, "km/h", (cx - 20, cy + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-            
-            px_ag = int(cx + (raio_int - 20) * math.cos(math.radians(ang_vd)))
-            py_ag = int(cy + (raio_int - 20) * math.sin(math.radians(ang_vd)))
-            cv2.line(frame, (cx, cy), (px_ag, py_ag), cor_v, 3)
-            cv2.circle(frame, (cx, cy), 6, (255, 255, 255), -1)
-
+            self._desenhar_velocimetro(frame, H)
         elif self.layout == "cyber":
-            cx, cy = W // 2, H // 2
-            cv2.circle(frame, (cx, cy), 40, (0, 255, 0), 1)
-            cv2.line(frame, (cx - 60, cy), (cx - 20, cy), (0, 255, 0), 2)
-            cv2.line(frame, (cx + 20, cy), (cx + 60, cy), (0, 255, 0), 2)
-            cv2.line(frame, (cx, cy - 60), (cx, cy - 20), (0, 255, 0), 2)
-            cv2.line(frame, (cx, cy + 20), (cx, cy + 60), (0, 255, 0), 2)
-            cv2.circle(frame, (cx, cy), 2, (0, 0, 255), -1)
-            
-            cv2.rectangle(frame, (cx - 150, cy - 100), (cx - 120, cy - 70), (0, 255, 255), 2)
-            cv2.rectangle(frame, (cx + 120, cy + 70), (cx + 150, cy + 100), (0, 255, 255), 2)
-            
-            g_cx, g_cy = 180, H - 150
-            g_raio = 90
-            
-            cv2.circle(frame, (g_cx, g_cy), g_raio, (255, 255, 255), 1)
-            cv2.circle(frame, (g_cx, g_cy), g_raio // 2, (100, 100, 100), 1)
-            cv2.line(frame, (g_cx - g_raio, g_cy), (g_cx + g_raio, g_cy), (100, 100, 100), 1)
-            cv2.line(frame, (g_cx, g_cy - g_raio), (g_cx, g_cy + g_raio), (100, 100, 100), 1)
-            
-            accel_long = self.aceleracao_ms2 / 9.8 
-            accel_lat = telemetria_ext.get("aceleracao_x", 0.0) / 9.8 if self.modo == "sensor" else math.sin(time.time() * 2) * 0.2
-            
-            px = int(g_cx + (max(-1.5, min(1.5, accel_lat)) / 1.5) * g_raio)
-            py = int(g_cy - (max(-1.5, min(1.5, accel_long)) / 1.5) * g_raio) 
-            
-            cv2.circle(frame, (px, py), 8, (0, 255, 255), -1)
-            cv2.putText(frame, "G-METER", (g_cx - 30, g_cy + g_raio + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            cv2.putText(frame, f"G: {abs(accel_long):.2f}", (g_cx - 20, g_cy - g_raio - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            self._desenhar_cyber(frame, H, W, telemetria)
 
-        # ---------------------------------------------------------
-        # PAINEL DE DADOS DE CORRIDA
-        # ---------------------------------------------------------
-        cv2.putText(frame, "TELEMETRIA", (dx + 15, dy + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-        cv2.putText(frame, f"MEDIA:  {self.velocidade_media_kmh:.1f} km/h", (dx + 15, dy + 65), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        cv2.putText(frame, f"MAXIMA: {self.velocidade_maxima:.1f} km/h", (dx + 15, dy + 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 1)
-        
-        cor_a = (255, 255, 0) if self.aceleracao_ms2 >= 0 else (255, 0, 255)
-        cv2.putText(frame, f"ACEL:   {self.aceleracao_ms2:+.2f} m/s2", (dx + 15, dy + 135), cv2.FONT_HERSHEY_SIMPLEX, 0.6, cor_a, 2)
-                    
-        if time.time() - telemetria_ext["ultima_att"] < 2.0:
-            gps_kmh = telemetria_ext["gps_speed_ms"] * 3.6
-            accel_y = telemetria_ext["aceleracao_y"]
-            cv2.line(frame, (dx + 10, dy + 150), (dx + 260, dy + 150), (100, 100, 100), 1)
-            cv2.putText(frame, "SENSOR CELULAR", (dx + 15, dy + 170), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-            cv2.putText(frame, f"GPS:   {gps_kmh:.1f} km/h", (dx + 15, dy + 195), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            cv2.putText(frame, f"ACCEL: {accel_y:+.2f} m/s2", (dx + 15, dy + 215), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        self._desenhar_telemetria(frame, dx, dy, telemetria)
 
         cv2.putText(frame, "[C] Calib  [S] Modo  [L] Layout  [I] IA ON/OFF  [R] Reset  [Q] Sair",
                     (10, H - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
@@ -556,10 +579,132 @@ class OdometriaVisual:
 
         return frame
 
+    def _registrar_estatisticas(self):
+        velocidade = self.velocidade_instantanea_kmh
+        self.velocidade_maxima = max(self.velocidade_maxima, velocidade)
+        self.soma_velocidades_curso += velocidade
+        self.qtd_medicoes_curso += 1
+        self.velocidade_media_kmh = (
+            self.soma_velocidades_curso / self.qtd_medicoes_curso
+        )
+        self.historico_grafico.append(velocidade)
+        if len(self.historico_grafico) > 300:
+            self.historico_grafico.pop(0)
+
+    def _calcular_demo(self, delta_tempo, tempo_atual):
+        self.tempo_demo += delta_tempo
+        ciclo = (self.tempo_demo % 12.0) / 12.0
+        if ciclo < 0.4:
+            aceleracao = 5.0
+        elif ciclo < 0.6:
+            aceleracao = 0.0
+        elif ciclo < 0.9:
+            aceleracao = -6.0
+        else:
+            aceleracao = 0.0
+
+        nova_velocidade = (
+            self.velocidade_instantanea_kmh + aceleracao * delta_tempo * 3.6
+        )
+        self.velocidade_instantanea_kmh = max(0.0, min(120.0, nova_velocidade))
+        self.aceleracao_ms2 = aceleracao * self.escala
+        self.ultimo_tempo = tempo_atual
+        self.historico_recente.append(self.velocidade_instantanea_kmh)
+        if len(self.historico_recente) > 10:
+            self.historico_recente.pop(0)
+        self._registrar_estatisticas()
+
+    def _calcular_por_listras(self, frame, tempo_atual):
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        mascara_branca = cv2.inRange(
+            hsv, np.array([0, 0, 150]), np.array([180, 50, 255])
+        )
+        mascara_amarela = cv2.inRange(
+            hsv, np.array([15, 100, 100]), np.array([40, 255, 255])
+        )
+        mascara = cv2.bitwise_or(mascara_branca, mascara_amarela)
+        linha_deteccao = frame.shape[0] - 150
+        mascara[:linha_deteccao - 100, :] = 0
+        contornos, _ = cv2.findContours(
+            mascara, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        cv2.line(
+            frame,
+            (0, linha_deteccao),
+            (frame.shape[1], linha_deteccao),
+            (0, 0, 255),
+            2,
+        )
+
+        faixa_cruzando = False
+        for contorno in contornos:
+            if cv2.contourArea(contorno) <= 2000:
+                continue
+            x, y, largura, altura = cv2.boundingRect(contorno)
+            if y < linha_deteccao < y + altura:
+                faixa_cruzando = True
+                cv2.rectangle(
+                    frame,
+                    (x, y),
+                    (x + largura, y + altura),
+                    (0, 255, 0),
+                    4,
+                )
+                break
+
+        velocidade = 0.0
+        if faixa_cruzando and not self.faixa_passando:
+            self.faixa_passando = True
+            if self.ultimo_tempo_listra is not None:
+                intervalo = tempo_atual - self.ultimo_tempo_listra
+                if intervalo > 0.3:
+                    velocidade = self.distancia_listras_m / intervalo * 3.6
+            self.ultimo_tempo_listra = tempo_atual
+        elif not faixa_cruzando:
+            self.faixa_passando = False
+
+        if self.ultimo_tempo_listra is not None:
+            intervalo = tempo_atual - self.ultimo_tempo_listra
+            if intervalo > 2.0:
+                velocidade = self.velocidade_instantanea_kmh / self.escala * 0.95
+            elif velocidade == 0.0:
+                velocidade = self.velocidade_instantanea_kmh / self.escala
+        return min(max(velocidade, 0.0), VEL_MAX_CARRINHO_KMH)
+
+    def _calcular_por_sensor(self, telemetria, delta_tempo):
+        gps_kmh = telemetria["gps_speed_ms"] * 3.6
+        aceleracao_y = telemetria["aceleracao_y"]
+        if gps_kmh > 1.0:
+            velocidade = gps_kmh
+        elif abs(aceleracao_y) < 0.3:
+            velocidade = self.velocidade_instantanea_kmh / self.escala * 0.92
+        else:
+            velocidade_anterior = self.velocidade_instantanea_kmh / self.escala
+            velocidade = velocidade_anterior + aceleracao_y * delta_tempo * 3.6
+        return min(max(velocidade, -VEL_MAX_CARRINHO_KMH), VEL_MAX_CARRINHO_KMH)
+
+    def _calcular_real(self, deslocamento_px, sinal, delta_tempo):
+        if deslocamento_px < 0.3:
+            return 0.0
+        deslocamento_mm = deslocamento_px * self.fator_px_mm
+        velocidade = (deslocamento_mm / 1000.0) / delta_tempo * 3.6
+        return min(velocidade, VEL_MAX_CARRINHO_KMH) * sinal
+
+    def _calcular_simulado(self, deslocamento_px, sinal, delta_tempo):
+        if deslocamento_px < 0.3:
+            return 0.0
+        fluxo = deslocamento_px / delta_tempo
+        if self.flow_maximo_observado_pxs is None or fluxo > self.flow_maximo_observado_pxs:
+            self.flow_maximo_observado_pxs = fluxo
+            self._salvar_calibracao()
+        proporcao = min(fluxo / self.flow_maximo_observado_pxs, 1.0)
+        return proporcao ** 0.75 * VEL_MAX_CARRINHO_KMH * sinal
+
     def calcular_velocidade(self, frame):
         tempo_atual  = time.time()
         delta_tempo  = tempo_atual - self.ultimo_tempo
         frame_debug  = frame.copy()
+        telemetria = snapshot_telemetria()
         
         if getattr(self, 'ia_ativada', True) == False:
             self.velocidade_instantanea_kmh = 0.0
@@ -570,27 +715,7 @@ class OdometriaVisual:
         frame_cinza_atual = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         if self.modo == "demo":
-            self.tempo_demo += delta_tempo
-            ciclo = (self.tempo_demo % 12.0) / 12.0
-            accel_falsa = 5.0 if ciclo < 0.4 else (0.0 if ciclo < 0.6 else (-6.0 if ciclo < 0.9 else 0.0))
-                
-            self.velocidade_instantanea_kmh = max(0.0, min(120.0, self.velocidade_instantanea_kmh + accel_falsa * delta_tempo * 3.6))
-            self.aceleracao_ms2 = accel_falsa * self.escala
-            self.ultimo_tempo = tempo_atual
-            
-            self.historico_recente.append(self.velocidade_instantanea_kmh)
-            if len(self.historico_recente) > 10: self.historico_recente.pop(0)
-            
-            self.soma_velocidades_curso += self.velocidade_instantanea_kmh
-            self.qtd_medicoes_curso += 1
-            self.velocidade_media_kmh = self.soma_velocidades_curso / self.qtd_medicoes_curso
-            
-            if self.velocidade_instantanea_kmh > self.velocidade_maxima:
-                self.velocidade_maxima = self.velocidade_instantanea_kmh
-                
-            self.historico_grafico.append(self.velocidade_instantanea_kmh)
-            if len(self.historico_grafico) > 300: self.historico_grafico.pop(0)
-            
+            self._calcular_demo(delta_tempo, tempo_atual)
             return self.desenhar_painel(frame_debug)
 
         mediana_px, _ = self._extrair_flow(frame_cinza_atual, frame_debug)
@@ -606,7 +731,7 @@ class OdometriaVisual:
             self.ultimo_tempo = tempo_atual
             return self.desenhar_painel(frame_debug)
 
-        if self.calibrando:
+        if self.calibrando and mediana_px is not None:
             self.calib_pixels_acumulados += abs(mediana_px)
             self.calib_frames += 1
             cv2.putText(frame_debug, f"CALIBRANDO... {self.calib_pixels_acumulados:.0f} px | [C] finalizar",
@@ -617,76 +742,17 @@ class OdometriaVisual:
         sinal = -1 if (mediana_px is not None and mediana_px < 0) else 1
         
         if self.modo == "listras":
-            hsv = cv2.cvtColor(frame_debug, cv2.COLOR_BGR2HSV)
-            mask_white = cv2.inRange(hsv, np.array([0, 0, 150]), np.array([180, 50, 255]))
-            mask_yellow = cv2.inRange(hsv, np.array([15, 100, 100]), np.array([40, 255, 255]))
-            mask = cv2.bitwise_or(mask_white, mask_yellow)
-            
-            H_frame = frame_debug.shape[0]
-            linha_deteccao = H_frame - 150
-            mask[:linha_deteccao - 100, :] = 0 
-            
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.line(frame_debug, (0, linha_deteccao), (frame_debug.shape[1], linha_deteccao), (0, 0, 255), 2)
-            
-            faixa_cruzando = False
-            for cnt in contours:
-                if cv2.contourArea(cnt) > 2000:
-                    x, y, w, h = cv2.boundingRect(cnt)
-                    if y < linha_deteccao < y + h:
-                        faixa_cruzando = True
-                        cv2.rectangle(frame_debug, (x, y), (x+w, y+h), (0, 255, 0), 4)
-                        break
-                        
-            if faixa_cruzando and not self.faixa_passando:
-                self.faixa_passando = True
-                if self.ultimo_tempo_listra is not None:
-                    dt_listra = tempo_atual - self.ultimo_tempo_listra
-                    if dt_listra > 0.3:
-                        vel_ms = self.distancia_listras_m / dt_listra
-                        velocidade_fisica_kmh = vel_ms * 3.6
-                self.ultimo_tempo_listra = tempo_atual
-            elif not faixa_cruzando:
-                self.faixa_passando = False
-                
-            if self.ultimo_tempo_listra is None:
-                velocidade_fisica_kmh = 0.0
-            else:
-                dt_listra = tempo_atual - self.ultimo_tempo_listra
-                if dt_listra > 2.0:
-                    velocidade_fisica_kmh = (self.velocidade_instantanea_kmh / self.escala) * 0.95
-                elif velocidade_fisica_kmh == 0.0:
-                    velocidade_fisica_kmh = self.velocidade_instantanea_kmh / self.escala
-                    
-            velocidade_fisica_kmh = min(max(velocidade_fisica_kmh, 0.0), VEL_MAX_CARRINHO_KMH)
-
+            velocidade_fisica_kmh = self._calcular_por_listras(frame_debug, tempo_atual)
         elif self.modo == "sensor":
-            gps_kmh = telemetria_ext["gps_speed_ms"] * 3.6
-            accel_y = telemetria_ext["aceleracao_y"]
-            
-            if gps_kmh > 1.0:
-                velocidade_fisica_kmh = gps_kmh
-            else:
-                if abs(accel_y) < 0.3:
-                    velocidade_fisica_kmh = (self.velocidade_instantanea_kmh / self.escala) * 0.92
-                else:
-                    vel_ms = accel_y * delta_tempo
-                    velocidade_fisica_kmh = (self.velocidade_instantanea_kmh / self.escala) + (vel_ms * 3.6)
-            
-            velocidade_fisica_kmh = min(max(velocidade_fisica_kmh, -VEL_MAX_CARRINHO_KMH), VEL_MAX_CARRINHO_KMH)
-
+            velocidade_fisica_kmh = self._calcular_por_sensor(telemetria, delta_tempo)
         elif self.modo == "real" and self.fator_px_mm is not None:
-            if mediana_px_abs >= 0.3:
-                desl_mm = mediana_px_abs * self.fator_px_mm
-                velocidade_fisica_kmh = min(((desl_mm / 1000.0) / delta_tempo) * 3.6, VEL_MAX_CARRINHO_KMH) * sinal
+            velocidade_fisica_kmh = self._calcular_real(
+                mediana_px_abs, sinal, delta_tempo
+            )
         else:
-            if mediana_px_abs >= 0.3:
-                flow_pxs = mediana_px_abs / delta_tempo
-                if self.flow_maximo_observado_pxs is None or flow_pxs > self.flow_maximo_observado_pxs:
-                    self.flow_maximo_observado_pxs = flow_pxs
-                    self._salvar_calibracao()
-                proporcao = min(flow_pxs / self.flow_maximo_observado_pxs, 1.0)
-                velocidade_fisica_kmh = (proporcao ** 0.75) * VEL_MAX_CARRINHO_KMH * sinal
+            velocidade_fisica_kmh = self._calcular_simulado(
+                mediana_px_abs, sinal, delta_tempo
+            )
 
         velocidade_kmh = velocidade_fisica_kmh * self.escala
 
@@ -707,14 +773,7 @@ class OdometriaVisual:
         else:
             self.aceleracao_ms2 = self.aceleracao_ms2 * 0.7 + accel_crua * 0.3
 
-        if self.velocidade_instantanea_kmh > self.velocidade_maxima:
-            self.velocidade_maxima = self.velocidade_instantanea_kmh
-        self.soma_velocidades_curso += self.velocidade_instantanea_kmh
-        self.qtd_medicoes_curso += 1
-        self.velocidade_media_kmh = self.soma_velocidades_curso / self.qtd_medicoes_curso
-        self.historico_grafico.append(self.velocidade_instantanea_kmh)
-        if len(self.historico_grafico) > 300:
-            self.historico_grafico.pop(0)
+        self._registrar_estatisticas()
 
         self.ultimo_tempo = tempo_atual
         return self.desenhar_painel(frame_debug)
@@ -777,7 +836,7 @@ if __name__ == "__main__":
         odometria._salvar_calibracao()
         if isinstance(cap, AsyncIPCamera):
             cap.stop()
-        else:
+        elif cap is not None:
             cap.release()
         cv2.destroyAllWindows()
         print("[FIM] Neurodrive encerrado.")
